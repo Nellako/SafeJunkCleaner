@@ -1,0 +1,33 @@
+# Local tools and private working records
+.zcode/
+.workbuddy/
+NN_*/
+
+# Generated builds, distribution packages and detailed test evidence
+artifacts/
+releases/
+deliveries/
+dist/
+coverage/
+temp*/
+*.log
+*.zip
+*.exe
+*.pdb
+*.tmp
+*.bak
+
+# Local preferences and credentials
+.env
+.env.*
+!.env.example
+*.user
+*.suo
+.vs/
+settings.json
+preferences-*.json
+
+# OS/editor metadata
+Thumbs.db
+Desktop.ini
+.DS_Store

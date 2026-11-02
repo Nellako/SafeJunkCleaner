@@ -1,0 +1,29 @@
+﻿#requires -Version 5.1
+param([Parameter(Mandatory=$true)][string]$RepoRoot,[Parameter(Mandatory=$true)][string]$CaseId,[Parameter(Mandatory=$true)][string]$ResultPath,[Parameter(Mandatory=$true)][string]$EvidenceDirectory,[switch]$LoadGui,[string]$ExePath='')
+. (Join-Path $RepoRoot 'tests\lib\Harness.ps1') -RepoRoot $RepoRoot -CaseId $CaseId -ResultPath $ResultPath -EvidenceDirectory $EvidenceDirectory -LoadGui:$LoadGui -ExePath $ExePath
+try {
+    Assert-True 'EXE exists' ([IO.File]::Exists($ExePath)) $ExePath
+    $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath);Assert-Equal 'EXE file version' '0.9.0.0' $version.FileVersion
+    $signature=[string](Get-AuthenticodeSignature -LiteralPath $ExePath).Status
+    Save-Evidence 'exe-facts' ([pscustomobject]@{SHA256=(Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash;FileVersion=$version.FileVersion;Signature=$signature})|Out-Null
+    if($signature -ne 'Valid'){Add-Limitation ('Authenticode='+$signature+'; unsigned is disclosed, not proof of trust.')}
+    $context=New-SjcContext;$task=New-SjcTaskDirectory $context;$output=Join-Path $task 'exe-selftest.json'
+    $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$ExePath;$info.Arguments='-end -WorkerMode SelfTest -OutputPath "'+$output+'"';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+    $p=[Diagnostics.Process]::new();$p.StartInfo=$info;[void]$p.Start();$null=$p.Handle;$done=$p.WaitForExit(60000);if(-not $done){$p.Kill();[void]$p.WaitForExit(5000)}
+    Assert-True 'EXE completes within timeout' $done
+    Assert-Equal 'EXE exit zero' 0 $p.ExitCode;$p.Dispose()
+    Assert-True 'EXE writes approved output' ([IO.File]::Exists($output))
+    $result=Get-Content -LiteralPath $output -Raw -Encoding UTF8|ConvertFrom-Json;Save-Evidence 'exe-result' $result|Out-Null
+    Assert-Equal 'EXE selftest success' 'Success' $result.Status $result.Error
+    Assert-Equal 'all EXE checks passed' 0 (@($result.Checks|Where-Object {-not $_.Passed}).Count)
+    Assert-Equal 'EXE GUI success' 'Success' $result.Gui.Status (@($result.Gui.Failed)-join ';')
+    Assert-Equal 'EXE real candidate count' 2 $result.Scan.CandidateCount
+    Assert-Equal 'EXE real deleted count' 1 $result.Clean.Deleted
+    Assert-Equal 'EXE real excluded count' 1 $result.Clean.Skipped
+    Assert-True 'EXE new target survives' ([IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-new.tmp')))
+    Assert-True 'EXE excluded target survives' ([IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-kept.tmp')))
+    Assert-True 'EXE old target removed' (-not [IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-old.tmp')))
+    Assert-True 'EXE completion marker' ([IO.File]::Exists((Join-Path $task 'task.completed')))
+    Add-DeclaredExclusion 'No real recycle-bin empty or production cache scan/clean; EXE selftest uses its own GUID sandbox.'
+} catch {Assert-True ('unhandled: '+$_.Exception.Message) $false $_.ScriptStackTrace}
+Complete-TestCase
