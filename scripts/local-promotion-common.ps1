@@ -252,7 +252,7 @@ function Get-LpEvidenceFacts {
         $total += [int]$r.Assertions
     }
     if (@($summary.Results).Count -ne $required.Count -or $summary.Cases -ne $required.Count -or $summary.Passed -ne $required.Count -or $summary.Assertions -ne $total) { throw 'Release totals mismatch.' }
-    $sources = @('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Worker.ps1','src/Gui.ps1','version.json')
+    $sources = @('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Discovery.ps1','src/Maintenance.ps1','src/Worker.ps1','src/Gui.ps1','version.json')
     Assert-LpRecordSet $manifest.Sources ($sources + @('scripts/build.ps1','assets/app.ico')) $Repository.Path
     # 构建清单之外仍保存构建前全仓指纹，不能事后猜测验收时的未提交状态。
     Assert-LpRecordSet $inputs.Sources ($sources + @('scripts/build.ps1','assets/app.ico')) $Repository.Path
@@ -278,7 +278,7 @@ function Get-LpEvidenceFacts {
     if ((Get-LpHash $summary.Exe.Path) -ne $exe[0].SHA256 -or $summary.Exe.SHA256 -ne $exe[0].SHA256) { throw 'Tested EXE differs from build.' }
     $paths.Add((Get-LpPath $summary.Exe.Path))
     if ($gui.Status -ne 'Passed' -or $gui.GuiSourceSHA256 -ne (Get-LpHash (Join-Path $Repository.Path 'src/Gui.ps1')) -or $gui.IconSHA256 -ne (Get-LpHash (Join-Path $Repository.Path 'assets/app.ico'))) { throw 'GUI acceptance source/icon mismatch.' }
-    foreach ($name in @('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved')) {
+    foreach ($name in @('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved','SingleWindowFlowObserved','ThreePresetImmediateApplyObserved','AdvancedCustomOffByDefaultObserved','DiscoveryAuthorizationCancelObserved','MaintenanceCancelObserved')) {
         if (@($gui.Checks | Where-Object { $_.Name -ceq $name -and $_.Passed -is [bool] -and $_.Passed }).Count -ne 1) { throw "Missing actual desktop acceptance: $name" }
     }
     foreach ($check in @($gui.Checks)) { if ($check.Passed -isnot [bool] -or -not $check.Passed) { throw 'Failed/invalid GUI check.' } }

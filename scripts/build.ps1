@@ -7,7 +7,7 @@ $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'src\Version.ps1')
 $metadata=Get-SjcVersionInfo;$version=$metadata.version;$fileVersion=$metadata.fileVersion
 $encoding=[Text.UTF8Encoding]::new($true)
-$sourceFiles=@('src\Main.ps1','src\Version.ps1','src\Rules.ps1','src\Core.ps1','src\Worker.ps1','src\Gui.ps1')
+$sourceFiles=@('src\Main.ps1','src\Version.ps1','src\Rules.ps1','src\Core.ps1','src\Discovery.ps1','src\Maintenance.ps1','src\Worker.ps1','src\Gui.ps1')
 $sourceRecords=@()
 foreach($relative in $sourceFiles){
     $file=Join-Path $root $relative
@@ -25,7 +25,7 @@ foreach($relative in @('version.json','assets\app.ico','scripts\build.ps1')){
     $sourceRecords += [pscustomobject]@{Path=$relative;SHA256=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash}
 }
 $entry=[IO.File]::ReadAllText((Join-Path $root $sourceFiles[0]))
-$modules=foreach($relative in $sourceFiles[1..5]){"`r`n# region $relative`r`n"+[IO.File]::ReadAllText((Join-Path $root $relative))+"`r`n# endregion`r`n"}
+$modules=foreach($relative in $sourceFiles[1..($sourceFiles.Count-1)]){"`r`n# region $relative`r`n"+[IO.File]::ReadAllText((Join-Path $root $relative))+"`r`n# endregion`r`n"}
 $marker='# <SJC-MODULES>'
 if(($entry.Split(@($marker),[StringSplitOptions]::None)).Count -ne 2){throw 'Expected exactly one module marker.'}
 $embedded='$script:SjcEmbeddedVersion = '+"[pscustomobject]@{version='$version';fileVersion='$fileVersion';planSchemaVersion=$($metadata.planSchemaVersion)}`r`n"

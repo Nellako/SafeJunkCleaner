@@ -5,12 +5,15 @@ function New-SjcRule {
         [double]$MinimumAgeHours = 24, [string[]]$RequiresClosedProcess = @(),
         [bool]$Recommended = $false, [string]$Risk = '中低', [string]$Note = '',
         [double]$DeepMinimumAgeHours = -1, [string[]]$OverrideEnvironment = @())
-    if ($DeepMinimumAgeHours -lt 0) { $DeepMinimumAgeHours=$MinimumAgeHours }
+    if (-not $PSBoundParameters.ContainsKey('DeepMinimumAgeHours')) { $DeepMinimumAgeHours=$MinimumAgeHours }
     if ($MinimumAgeHours -le 0 -or $DeepMinimumAgeHours -le 0 -or $DeepMinimumAgeHours -gt $MinimumAgeHours) { throw '规则年龄必须为正数且深度档不得高于推荐档。' }
     [pscustomobject][ordered]@{ Id=$Id; TemplateId=$TemplateId; Name=$Name; Group=$Group; Risk=$Risk;
         Recommended=$Recommended; Root=$Root; Patterns=@($Patterns); ExcludePatterns=@($ExcludePatterns);
         MinimumAgeHours=$MinimumAgeHours; RecommendedMinimumAgeHours=$MinimumAgeHours; DeepMinimumAgeHours=$DeepMinimumAgeHours;
-        CleaningProfile='Recommended'; RequiresClosedProcess=@($RequiresClosedProcess); OverrideEnvironment=@($OverrideEnvironment);
+        LowMinimumAgeHours=$MinimumAgeHours; MediumMinimumAgeHours=$MinimumAgeHours; HighMinimumAgeHours=$DeepMinimumAgeHours;
+        PresetLevel='High'; CleaningProfile='Medium'; AgePolicy='AgeBounded'; ProcessPolicy='NameGuard';
+        AuthorizationId=''; AuthorizationBinding=''; DiscoveryAdapter=''; DiscoverySource=''; DiscoverySourceValue=''; RootDirectoryIdentity='';
+        RequiresClosedProcess=@($RequiresClosedProcess); OverrideEnvironment=@($OverrideEnvironment);
         Available=[IO.Directory]::Exists($Root); Note=$Note }
 }
 
@@ -64,7 +67,15 @@ function Get-SjcRuleTemplates {
         $id='Teams'+$cache
         New-SjcRule -Id $id -TemplateId $id -Name ('Teams Classic / '+$cache) -Group '应用缓存' -Root (Join-Path $roaming ('Microsoft\Teams\'+$cache)) -MinimumAgeHours 168 -DeepMinimumAgeHours 24 -RequiresClosedProcess @('Teams','ms-teams') -Risk '中' -Note '仅经典版官方列出的Roaming缓存子根；不含数据库/离线存储，不处理新版MSIX或整个Teams目录。'
     }
-    # Exact, opt-in rebuildable graphics caches; recompilation can be expensive.
+    # Official new Teams WebView2 subroots only; never reset the whole app/profile.
+    foreach($item in @(
+        @('NewTeamsCache','Cache'),
+        @('NewTeamsGPUCache','GPUCache'),
+        @('NewTeamsCodeCache','Code Cache')
+    )) {
+        New-SjcRule -Id $item[0] -TemplateId $item[0] -Name ('新版 Teams / '+$item[1]) -Group '应用缓存' -Root (Join-Path $local ('Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\WV2Profile_tfw\'+$item[1])) -MinimumAgeHours 168 -DeepMinimumAgeHours 24 -RequiresClosedProcess @('ms-teams','Teams','msedgewebview2') -Risk '中' -Note '仅官方列出的精确WebView2缓存子根；不含Service Worker、CacheStorage、WebStorage或整个Teams根，不是整应用重置。可证明无关的WebView2宿主不阻断；归属未知仍保守跳过，不自动结束进程。'
+    }
+    # Exact rebuildable graphics caches; recompilation can be expensive.
     foreach($item in @(
         @('D3DSCache','DirectX 着色器缓存','D3DSCache'),
         @('NvidiaDXCache','NVIDIA DirectX 着色器缓存','NVIDIA\DXCache'),
@@ -118,21 +129,88 @@ function Get-SjcRuleTemplates {
     }
 }
 
+function Get-SjcTemplateAgePolicy {
+    param([string]$TemplateId)
+    if ($TemplateId -cin @('ChromeCache','ChromeCodeCache','ChromeGPUCache','EdgeCache','EdgeCodeCache','EdgeGPUCache','BraveCache','BraveCodeCache','BraveGPUCache','FirefoxCache2','VSCodeCache','VSCodeCodeCache','NewTeamsCache','NewTeamsCodeCache','NewTeamsGPUCache','TeamsGPUCache')) { return 'PureCache' }
+    return 'AgeBounded'
+}
+function Assert-SjcRuleAgePolicy {
+    param($Rule)
+    $expected=Get-SjcTemplateAgePolicy $Rule.TemplateId
+    if ($Rule.AgePolicy -cne $expected) { throw '年龄策略不属于可信模板白名单。' }
+    foreach($name in @('LowMinimumAgeHours','MediumMinimumAgeHours','HighMinimumAgeHours')) {
+        $age=[double]$Rule.$name
+        if ([double]::IsNaN($age) -or [double]::IsInfinity($age) -or $age -lt 0) { throw '规则年龄不得为负数或非有限值。' }
+        if ($age -eq 0 -and ($name -cne 'HighMinimumAgeHours' -or $expected -cne 'PureCache')) { throw '仅高强度可信纯缓存允许零小时。' }
+    }
+}
+
+function Get-SjcCleaningProfiles {
+    @(
+        [pscustomobject]@{ Id='Low'; Label='低强度'; Description='用户临时文件与浏览器磁盘缓存，至少保留24小时。'; Impact='范围较小；浏览器下次访问可能重新下载缓存。' }
+        [pscustomobject]@{ Id='Medium'; Label='中强度'; Description='低强度范围，加系统临时文件、代码/应用及着色器缓存。'; Impact='部分应用需重建缓存；着色器保留168小时，首次运行仍可能卡顿。' }
+        [pscustomobject]@{ Id='High'; Label='高强度'; Description='中强度范围，加包/构建缓存与720小时以上的历史诊断文件。'; Impact='精确纯缓存不按年龄保留（仍跳过未来时间、占用、只读、相关进程及不安全路径）；临时文件仍有正数年龄；包缓存需要重新下载/重新编译，可能影响离线依赖；删除旧诊断资料将丢失历史故障证据。着色器仍保留168小时。' }
+    )
+}
+function Get-SjcPresetRuleIds {
+    param([Parameter(Mandatory=$true)]$Context,$CleaningProfile=(Get-SjcContextConfiguration $Context).CleaningProfile)
+    Assert-SjcCleaningProfile $CleaningProfile
+    $levels=@{Low=1;Medium=2;High=3}
+    foreach($rule in @(Get-SjcRules $Context)) {
+        # Missing fixed roots remain in the preset. Discovery never guesses profiles.
+        if ($levels.ContainsKey($rule.PresetLevel) -and $levels[$rule.PresetLevel] -le $levels[$CleaningProfile]) { $rule.Id }
+    }
+}
 function Get-SjcRules {
     param([Parameter(Mandatory=$true)]$Context)
     $configuration=Get-SjcContextConfiguration $Context
-    foreach($rule in @(Get-SjcRuleTemplates $Context)) {
-        # Explicit nonzero Temp floors are independent from browser/cache policy.
+    $packages=@('NpmCache','NuGetCache','PipHttpCache','PipHttpV2Cache','PipWheelCache','YarnCache','GoBuildCache')
+    $shaders=@('D3DSCache','NvidiaDXCache','NvidiaGLCache','AmdDxCache','AmdDxcCache','IntelShaderCache')
+    $templates=@(Get-SjcRuleTemplates $Context)
+    if (Get-Command Get-SjcAuthorizedCacheRuleTemplates -CommandType Function -ErrorAction SilentlyContinue) { $templates += @(Get-SjcAuthorizedCacheRuleTemplates $Context) }
+    foreach($rule in $templates) {
+        # Future templates are opt-in until assigned a reviewed preset level.
+        $rule.PresetLevel='CustomOnly'
         switch ($rule.TemplateId) {
-            'UserTemp' { $rule.DeepMinimumAgeHours=6 }
-            'WindowsTemp' { $rule.DeepMinimumAgeHours=24 }
-            'GradleCache' { $rule.DeepMinimumAgeHours=168 }
-            { $_ -in @('D3DSCache','NvidiaDXCache','NvidiaGLCache','AmdDxCache','AmdDxcCache','IntelShaderCache') } { $rule.DeepMinimumAgeHours=168 }
+            'SandboxOld' { $rule.PresetLevel='Low' }
+            'SandboxLog' { $rule.PresetLevel='Medium' }
+            'UserTemp' { $rule.PresetLevel='Low'; $rule.HighMinimumAgeHours=6 }
+            'WindowsTemp' { $rule.PresetLevel='Medium'; $rule.HighMinimumAgeHours=24 }
+            'VSCodeCache' { $rule.PresetLevel='Medium'; $rule.HighMinimumAgeHours=24 }
+            'VSCodeCodeCache' { $rule.PresetLevel='Medium'; $rule.HighMinimumAgeHours=24 }
+            'GradleCache' { $rule.PresetLevel='High'; $rule.HighMinimumAgeHours=168 }
+            { $_ -in $packages } { $rule.PresetLevel='High'; $rule.HighMinimumAgeHours=24 }
+            { $_ -in $shaders } {
+                $rule.PresetLevel='Medium'; $rule.LowMinimumAgeHours=168; $rule.MediumMinimumAgeHours=168; $rule.HighMinimumAgeHours=168
+                $rule.Note += ' 中、高强度均保留168小时，避免频繁重编译。'
+            }
+            { $_ -in @('TeamsCache','TeamsGPUCache','SteamHtmlCache') } { $rule.PresetLevel='Medium'; $rule.HighMinimumAgeHours=24 }
+            { $_ -in @('NewTeamsCache','NewTeamsGPUCache') } { $rule.PresetLevel='Medium'; $rule.HighMinimumAgeHours=24 }
+            'NewTeamsCodeCache' { $rule.PresetLevel='High'; $rule.HighMinimumAgeHours=24 }
+            { $_ -in @('CrashDumps','WERArchive') } { $rule.PresetLevel='High' }
         }
-        if ($rule.Group -eq '浏览器缓存') { $rule.DeepMinimumAgeHours=1 }
+        if ($rule.Group -eq '浏览器缓存') {
+            $rule.PresetLevel=if ($rule.TemplateId -eq 'FirefoxCache2' -or $rule.TemplateId -in @('ChromeCache','EdgeCache','BraveCache')) { 'Low' } else { 'Medium' }
+            $rule.HighMinimumAgeHours=1
+        }
+        # Only reviewed exact template IDs can waive age at High; payload/group labels cannot.
+        $rule.AgePolicy=Get-SjcTemplateAgePolicy $rule.TemplateId
+        if ($rule.AgePolicy -ceq 'PureCache') {
+            $rule.HighMinimumAgeHours=0
+            $rule.Note += ' 高强度纯缓存不按年龄保留；仍跳过未来时间、占用、只读、进程守卫或路径校验不通过的文件。'
+        }
+        if ($rule.TemplateId -cin @('NewTeamsCache','NewTeamsGPUCache','NewTeamsCodeCache')) {
+            $rule.ProcessPolicy='NewTeamsWebView2'
+            $rule.Note += ' WebView2仅在只读父链及可信路径能证明归属时区分宿主；未知/无权限仍跳过，不读取命令行。'
+        }
+        Assert-SjcRuleAgePolicy $rule
+        # Legacy properties describe the endpoints only; preset selection uses PresetLevel.
+        $rule.Recommended=($rule.PresetLevel -ceq 'Low')
+        $rule.RecommendedMinimumAgeHours=$rule.LowMinimumAgeHours; $rule.DeepMinimumAgeHours=$rule.HighMinimumAgeHours
         $rule.CleaningProfile=$configuration.CleaningProfile
-        if ($configuration.CleaningProfile -ceq 'Deep') { $rule.MinimumAgeHours=$rule.DeepMinimumAgeHours }
-        if ($rule.TemplateId -eq 'UserTemp') { $rule.Note='至少24小时（推荐）/6小时（深度）未修改；排除数据库日志、链接和受保护内容。' }
+        $rule.MinimumAgeHours=$rule.($configuration.CleaningProfile+'MinimumAgeHours')
+        if ($rule.TemplateId -eq 'UserTemp') { $rule.Note='至少24小时（低/中）或6小时（高）未修改；排除数据库日志、链接和受保护内容。' }
+        if ($rule.TemplateId -eq 'CrashDumps') { $rule.Note='仅720小时以上转储；删除将丢失历史故障诊断证据，高强度预设包含此类。' }
         $rule
     }
 }

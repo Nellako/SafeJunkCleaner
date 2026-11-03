@@ -27,12 +27,13 @@ try {
 
     $task = New-SjcTaskDirectory -Context $context
     $progress = Join-Path $task 'progress.json'
-    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -ProgressPath $progress
+    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -ProgressPath $progress -CustomEnabled $true
     [void](Save-Evidence 'scan-result' $scan)
 
     Assert-Equal 'scan status is Success' 'Success' $scan.Status $scan.Error
     Assert-Equal 'scan reports the version.json product version' (Get-SjcVersion) ([string]$scan.Version)
-    Assert-Equal 'scan reports the Recommended profile it was opened with' 'Recommended' ([string]$scan.CleaningProfile)
+    Assert-Equal 'scan reports the Medium tier it was opened with' 'Medium' ([string]$scan.CleaningProfile)
+    Assert-True 'scan reports CustomEnabled=true for a direct rule-list call' ($scan.CustomEnabled -eq $true) ([string]$scan.CustomEnabled)
     Assert-Equal 'scan TaskId equals the task directory GUID' ([IO.Path]::GetFileName($task)) ([string]$scan.TaskId)
 
     $candidates = @(Get-CandidateLines $scan.PlanPath)
@@ -98,7 +99,7 @@ try {
     $emptyContext = $emptySandbox.Context
     [void][IO.Directory]::Delete((Join-Path $emptySandbox.Root 'files'), $false)
     $emptyTask = New-SjcTaskDirectory -Context $emptyContext
-    $missing = Invoke-SjcScan -Context $emptyContext -RuleIds @('SandboxOld') -TaskDirectory $emptyTask
+    $missing = Invoke-SjcScan -Context $emptyContext -RuleIds @('SandboxOld') -TaskDirectory $emptyTask -CustomEnabled $true
     $missingCategories = @($missing.Categories)
     $missingCategory = @($missingCategories | Where-Object { $_.RuleId -eq 'SandboxOld' })[0]
     Assert-Equal 'missing root is reported as a distinct Missing category' 'Missing' $missingCategory.Status $missing.Error
@@ -107,7 +108,7 @@ try {
     Assert-True 'missing root is never reported as Failed' ($missing.Status -ne 'Failed') ([string]$missing.Status)
 
     $freshTask = New-SjcTaskDirectory -Context $context
-    $badChannel = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $freshTask -CancelPath (Join-Path $task 'shared.flag') -ProgressPath (Join-Path $task 'shared.flag')
+    $badChannel = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $freshTask -CustomEnabled $true -CancelPath (Join-Path $task 'shared.flag') -ProgressPath (Join-Path $task 'shared.flag')
     Assert-True 'overlapping channels fail the scan' ($badChannel.Status -eq 'Failed') $badChannel.Error
 }
 catch {

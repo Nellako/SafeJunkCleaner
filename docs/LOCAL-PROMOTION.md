@@ -1,6 +1,6 @@
 # 独立本地仓库：develop 单向快进 main
 
-本文仅定义本地工具，不表示当前改动已提交、已验收或已晋级。脚本面向 Windows PowerShell 5.1、Git for Windows、两个独立且非浅克隆的本地普通仓库，不使用 remote、push、commit、reset 或文件复制覆盖来晋级。
+本文仅定义本地工具，不表示当前改动已提交、已验收或已晋级。当前 v0.12.0 是待验证的开发候选；交付范围仅限本地，develop 经本工具单向安全晋级 main，不涉及远程推送或线上 Release。本文未授权实际提交或真实 main 晋级。脚本面向 Windows PowerShell 5.1、Git for Windows、两个独立且非浅克隆的本地普通仓库，不使用 remote、push、commit、reset 或文件复制覆盖来晋级。
 
 ## 工作区入口
 
@@ -28,8 +28,8 @@ Git identity/config/trace 环境变量覆盖被拒绝，避免 `GIT_DIR` 等重�
 以下仅为未来人工使用的示例。路径用实际的绝对路径替换，示例不自动执行 Git 提交。证据目录应在源仓库外预先建立，保存私有日志与截图，不上传。
 
 ```powershell
-$dev = 'E:\云端\90_软件驱动与编程项目\编程项目\90_已交付\SafeJunkCleaner-repositories\develop'
-$main = 'E:\云端\90_软件驱动与编程项目\编程项目\90_已交付\SafeJunkCleaner-repositories\main'
+$dev = 'D:\SafeJunkCleaner-repositories\develop'
+$main = 'D:\SafeJunkCleaner-repositories\main'
 $acceptedHead = (git -C $dev rev-parse HEAD).Trim()
 $targetHead = (git -C $main rev-parse HEAD).Trim()
 $private = 'D:\private-verification\this-acceptance' # 已人工建立的新目录
@@ -67,9 +67,9 @@ $private = 'D:\private-verification\this-acceptance' # 已人工建立的新目�
 封装不接受只有 `Status: Passed` 的 JSON。必须逐项满足以下要求。
 
 1. 构建前捕获具有固定 SourcePath、SourceCommit、时间戳、全仓输入 SHA-256，当前所有已跟踪文件字节与固定提交 blob 完全相同（包括换行符）；封装期间再次检查 HEAD、工作树和输入。Git 自动换行或过滤后字节不同也会阻塞，不自动重写或 normalize。
-2. 构建 manifest 匹配 `version.json`，包含六个 src 模块、version.json、build.ps1 和 assets/app.ico 的真实输入指纹，ps2exe 1.0.18、脚本与唯一 EXE 的产物名/长度/哈希。
+2. 构建 manifest 匹配 `version.json`，显式包含 8 个 src 模块（Main、Version、Rules、Core、Discovery、Maintenance、Worker、Gui）、version.json、build.ps1 和 assets/app.ico 的真实输入指纹，ps2exe 1.0.18、脚本与唯一 EXE 的产物名/长度/哈希。manifest、构建前输入与回归来源清单缺任一必需模块均拒绝；固定提交全仓快照仍覆盖其余已跟踪文件。
 3. 完整 Release summary：独立回归 Suite 标识，零失败/阻塞/缺口/门禁错误，正确总数、断言数；每个用例必须 Passed、正断言、非超时、退出码 0，并核对原始 result JSON 和保留 stdout/stderr。对固定提交 runner 的 `$script:AllCases` 做 AST 只读解析，将全部声明项作为必需用例，新用例不可被旧清单漏掉；旧 21 项作为最低不可删除基线。声明结构改变时保守停止，需更新适配器。summary.SourceHashes 必须覆盖源码、版本、build.ps1 及全部已跟踪 tests/*.ps1，EXE 哈希必须与构建产物一致。
-4. GUI 记录除 `Status`、`GuiSourceSHA256`、`IconSHA256`、非空 `EvidenceFiles`（绝对本地文件路径）外，还要求可解析的 ISO 8601 `AcceptedUtc`。`Checks` 内下列各 Name 恰有一个布尔 `Passed: true`，所有检查都须通过：`DesktopWindowObserved`、`RuleSelectionObserved`、`CandidatePagingAndKeepRestore`、`NoProductionDeletion`、`WhiteBackgroundIconObserved`、`CompactLayoutObserved`、`CleaningProfileConfirmationObserved`。没有实际观察则记录未通过/blocked，不能制造通过材料。
+4. GUI 记录除 `Status`、`GuiSourceSHA256`、`IconSHA256`、非空 `EvidenceFiles`（绝对本地文件路径）外，还要求可解析的 ISO 8601 `AcceptedUtc`。`Checks` 内下列各 Name 恰有一个布尔 `Passed: true`，所有检查都须通过：`DesktopWindowObserved`、`RuleSelectionObserved`、`CandidatePagingAndKeepRestore`、`NoProductionDeletion`、`WhiteBackgroundIconObserved`、`CompactLayoutObserved`、`CleaningProfileConfirmationObserved`、`SingleWindowFlowObserved`、`ThreePresetImmediateApplyObserved`、`AdvancedCustomOffByDefaultObserved`、`DiscoveryAuthorizationCancelObserved`、`MaintenanceCancelObserved`。发布与晋级共同要求这 12 项；没有实际观察则记录未通过/blocked，不能制造通过材料。发现窗口关闭须不改变授权与扫描；尚未启动的维护说明窗口关闭须不触发 UAC 或 DISM。
 5. 捕获在构建前，回归和 GUI 观察在构建后；回归完成不早于开始。默认所有时间在过去 72 小时内，最多可显式设置 `-MaxEvidenceAgeHours 168`，未来时间超过 5 分钟拒绝。封装到期时间从最早原始证据计算，重封装不能延长旧证据寿命。预检/执行会重新解析原始材料，校验封装文件集合、所有证据和产物哈希；原始材料必须保留原路径。
 
 已有验收材料若同时具有构建前捕获、当前完整字段、原始结果/日志/桌面证据和一致指纹，可以直接使用封装步骤。旧 manifest 缺少 build.ps1/图标、缺少构建前快照、GUI 无可靠 AcceptedUtc 或缺新增观察，均不补写虚假的历史记录，应在提交固定后重新构建并验收。

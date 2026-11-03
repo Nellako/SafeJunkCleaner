@@ -1,7 +1,10 @@
 ﻿#requires -Version 5.1
-# N02: preference profile contract - a missing CleaningProfile defaults to Recommended,
-# the field round-trips, unknown fields are still refused, and invalid profile values
-# are rejected without mutating the previous file.
+# N02: preferences v4 contract - fresh readers see no file, v4 carries exactly
+# RecycleMode/CleaningProfile/SelectedRuleIds/CustomEnabled, the saved selection is
+# normalized to the tier preset with CustomEnabled forced false, unknown fields and
+# invalid tier values are refused without touching the previous file, and a v3 file
+# (Recommended/Deep) migrates to Low + CustomEnabled=false + MigrationNotice while the
+# v3 file itself is preserved byte-for-byte.
 param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [Parameter(Mandatory = $true)][string]$CaseId,
@@ -12,71 +15,109 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'tests\lib\Harness.ps1') -RepoRoot $RepoRoot -CaseId $CaseId -ResultPath $ResultPath -EvidenceDirectory $EvidenceDirectory
 try {
     $sandbox = New-OwnedSandbox
-    $context = $sandbox.Context
+    $context = $sandbox.Context      # Medium
     $stateRoot = $context.StateRoot
-    $prefPath = Join-Path $stateRoot 'preferences-v3.json'
+    $prefPath = Join-Path $stateRoot 'preferences-v4.json'
+    $legacyPath = Join-Path $stateRoot 'preferences-v3.json'
     $allIds = @(Get-SjcRules -Context $context | ForEach-Object Id)
 
-    # Legacy v0.9 preference file without CleaningProfile must read as Recommended.
-    [IO.File]::WriteAllText($prefPath, ('{"RecycleMode":false,"SelectedRuleIds":["' + $allIds[0] + '"]}'), $Utf8NoBom)
-    $legacy = Read-SjcPreferences -Context $context
-    Assert-True 'legacy preferences without the field are accepted, not discarded' ($null -ne $legacy) 'null'
-    Assert-Equal 'missing CleaningProfile defaults to Recommended' 'Recommended' ([string]$legacy.CleaningProfile)
-    Assert-True 'default profile is a strict string' ($legacy.CleaningProfile -is [string]) ([string]$legacy.CleaningProfile)
-    Assert-True 'reading defaults never rewrites the legacy file' ([IO.File]::ReadAllText($prefPath) -notmatch 'CleaningProfile') ''
+    # 1. No file at all: the reader returns null instead of inventing a tier.
+    Assert-True 'a fresh state root has no preferences file' ($null -eq (Read-SjcPreferences -Context $context)) 'expected null'
+    Assert-True 'reading defaults creates no preferences file' (-not [IO.File]::Exists($prefPath) -and -not [IO.File]::Exists($legacyPath)) ''
 
-    # Explicit Deep round-trips.
-    $deepPrefs = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Deep' }
-    Assert-True 'saving an explicit Deep preference succeeds' (Save-SjcPreferences -Context $context -Preferences $deepPrefs) ''
+    # 2. Save normalizes to the tier preset and always stores CustomEnabled=false.
+    $mediumPreset = @(Get-SjcPresetRuleIds -Context $context -CleaningProfile 'Medium')
+    $saveInput = [pscustomobject]@{ RecycleMode = $false; SelectedRuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $true }
+    Assert-True 'saving a Medium preference succeeds' (Save-SjcPreferences -Context $context -Preferences $saveInput) ''
+    Assert-True 'saving writes preferences-v4.json' ([IO.File]::Exists($prefPath)) $prefPath
     $written = Get-Content -LiteralPath $prefPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Assert-Equal 'persisted field set includes CleaningProfile' 'CleaningProfile,RecycleMode,SelectedRuleIds' (@($written.PSObject.Properties.Name | Sort-Object) -join ',')
-    Assert-Equal 'persisted CleaningProfile is Deep' 'Deep' ([string]$written.CleaningProfile)
-    Assert-Equal 'Deep round-trips through the reader' 'Deep' ([string](Read-SjcPreferences -Context $context).CleaningProfile)
-    $deepRulesForPrefs = @(Get-SjcRules -Context $context)
-    $unknownDeep = @($deepPrefs.SelectedRuleIds | Where-Object { $_ -notin @($deepRulesForPrefs | ForEach-Object Id) })
-    Assert-Equal 'Deep preference ids remain the same rule inventory (no extra selection)' 0 $unknownDeep.Count ($unknownDeep -join ',')
+    Assert-Equal 'persisted field set is exactly the four contract fields' 'CleaningProfile,CustomEnabled,RecycleMode,SelectedRuleIds' (@($written.PSObject.Properties.Name | Sort-Object) -join ',')
+    Assert-Equal 'persisted tier is the saved tier' 'Medium' ([string]$written.CleaningProfile)
+    Assert-True 'persisted CustomEnabled is forced false (a draft is never enabled by file)' ($written.CustomEnabled -is [bool] -and $written.CustomEnabled -eq $false) ([string]$written.CustomEnabled)
+    Assert-Equal 'persisted SelectedRuleIds is the Medium preset, not the caller subset' (@($mediumPreset | Sort-Object) -join ',') (@($written.SelectedRuleIds | Sort-Object) -join ',')
+    Assert-True 'no v3 file is created by a v4 save' (-not [IO.File]::Exists($legacyPath)) ''
 
-    # Invalid profile values are refused and do not touch the stored file.
+    $readBack = Read-SjcPreferences -Context $context
+    Assert-Equal 'v4 round-trips the tier' 'Medium' ([string]$readBack.CleaningProfile)
+    Assert-True 'read CustomEnabled is false for a v4 file' ($readBack.CustomEnabled -eq $false) ([string]$readBack.CustomEnabled)
+    Assert-Equal 'read MigrationNotice is empty for a v4 file' '' ([string]$readBack.MigrationNotice)
+    Assert-True 'read RecycleMode round-trips as a boolean' ($readBack.RecycleMode -is [bool] -and -not $readBack.RecycleMode) ([string]$readBack.RecycleMode)
+
+    # 3. Rejected writes leave the stored file byte-identical.
     $before = [IO.File]::ReadAllText($prefPath)
     $badCases = @(
-        @{ Name = 'lowercase profile is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'deep' } },
-        @{ Name = 'unknown profile is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Max' } },
-        @{ Name = 'empty profile is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = '' } },
-        @{ Name = 'integer profile is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 2 } },
-        @{ Name = 'null profile property is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = $null } },
-        @{ Name = 'unknown extra field is still rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Deep'; ProfileEpoch = 3 } }
+        @{ Name = 'frozen Recommended tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Recommended'; CustomEnabled = $false } },
+        @{ Name = 'frozen Deep tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Deep'; CustomEnabled = $false } },
+        @{ Name = 'lowercase tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'medium'; CustomEnabled = $false } },
+        @{ Name = 'unknown tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Max'; CustomEnabled = $false } },
+        @{ Name = 'empty tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = ''; CustomEnabled = $false } },
+        @{ Name = 'missing CustomEnabled is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Low' } },
+        @{ Name = 'non-boolean CustomEnabled is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Low'; CustomEnabled = 'false' } },
+        @{ Name = 'unknown extra field is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Low'; CustomEnabled = $false; ProfileEpoch = 3 } },
+        @{ Name = 'unknown rule id is still rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('NotARule'); CleaningProfile = 'Low'; CustomEnabled = $false } },
+        @{ Name = 'duplicate rule id is still rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('SandboxOld', 'SandboxOld'); CleaningProfile = 'Low'; CustomEnabled = $false } },
+        @{ Name = 'scalar SelectedRuleIds is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = 'SandboxOld'; CleaningProfile = 'Low'; CustomEnabled = $false } }
     )
     foreach ($bad in $badCases) {
         $value = $bad.Value
         Assert-Throws $bad.Name { Save-SjcPreferences -Context $context -Preferences $value } ''
     }
-    Assert-Equal 'rejected preference writes leave the file byte-identical' $before ([IO.File]::ReadAllText($prefPath))
+    Assert-Equal 'rejected writes leave preferences-v4.json byte-identical' $before ([IO.File]::ReadAllText($prefPath))
 
-    # A stored file with an invalid profile must fail loudly on read, not silently default.
-    [IO.File]::WriteAllText($prefPath, ('{"RecycleMode":true,"SelectedRuleIds":["' + $allIds[0] + '"],"CleaningProfile":"deep"}'), $Utf8NoBom)
-    Assert-Throws 'stored lowercase profile fails loudly' { Read-SjcPreferences -Context $context } 'Recommended 或 Deep'
-    [IO.File]::WriteAllText($prefPath, ('{"RecycleMode":true,"SelectedRuleIds":["' + $allIds[0] + '"],"CleaningProfile":"Deep","Extra":1}'), $Utf8NoBom)
-    Assert-Throws 'stored unknown field fails loudly' { Read-SjcPreferences -Context $context } '未知字段'
-    [IO.File]::WriteAllText($prefPath, ('{"RecycleMode":true,"SelectedRuleIds":["' + $allIds[0] + '"]}'), $Utf8NoBom)
-    Assert-Equal 'repaired legacy file reads as Recommended again' 'Recommended' ([string](Read-SjcPreferences -Context $context).CleaningProfile)
+    # 4. A stored v4 file with an invalid tier or an out-of-date rule id fails loudly.
+    [IO.File]::WriteAllText($prefPath, '{"CleaningProfile":"Recommended","CustomEnabled":false,"RecycleMode":true,"SelectedRuleIds":["SandboxOld"]}', $Utf8NoBom)
+    Assert-Throws 'stored v4 with a frozen tier fails loudly' { Read-SjcPreferences -Context $context } 'Low、Medium 或 High'
+    $staleId = 'ChromeCache:Profile_99'
+    [IO.File]::WriteAllText($prefPath, ('{"CleaningProfile":"Low","CustomEnabled":false,"RecycleMode":true,"SelectedRuleIds":["' + $staleId + '"]}'), $Utf8NoBom)
+    Assert-Throws 'stored v4 referencing a rule discovered earlier fails loudly' { Read-SjcPreferences -Context $context } '未知或重复规则'
+    [IO.File]::WriteAllText($prefPath, '{"CleaningProfile":"Low","CustomEnabled":false,"RecycleMode":true,"SelectedRuleIds":["SandboxOld"],"Extra":1}', $Utf8NoBom)
+    Assert-Throws 'stored v4 with an unknown field fails loudly' { Read-SjcPreferences -Context $context } '未知字段'
+    [IO.File]::WriteAllText($prefPath, '{not-json', $Utf8NoBom)
+    Assert-Throws 'corrupt v4 JSON fails loudly' { Read-SjcPreferences -Context $context } ''
+    Remove-Item -LiteralPath $prefPath -Force
 
-    # Creating/using a Deep context must not rewrite preferences by itself, and Deep must
-    # not add rule ids (it changes thresholds only, never the selection inventory).
-    $prefHashBeforeDeep = Get-FileSha256 $prefPath
-    $deepContext = New-SjcContext -TestRoot $sandbox.Root -CleaningProfile 'Deep'
-    $deepIds = @(Get-SjcRules -Context $deepContext | ForEach-Object Id)
-    [void](Get-SjcRules -Context $deepContext)
-    Assert-Equal 'creating a Deep context does not rewrite preferences' $prefHashBeforeDeep (Get-FileSha256 $prefPath) $prefPath
-    $recommendedIds = @(Get-SjcRules -Context $deepContext | Where-Object Recommended | ForEach-Object Id)
-    Assert-Equal 'Deep keeps the same rule inventory as Recommended' (@($allIds | Sort-Object) -join '|') (@($deepIds | Sort-Object) -join '|')
-    Assert-True 'Deep does not auto-select rules beyond the saved selection' ($recommendedIds.Count -le $deepIds.Count) ('recommended=' + $recommendedIds.Count + '; total=' + $deepIds.Count)
+    # 5. v3 migration: Recommended/Deep -> Low, CustomEnabled=false, notice, v3 preserved.
+    foreach ($legacyTier in @('Recommended', 'Deep')) {
+        [IO.File]::WriteAllText($legacyPath, ('{"CleaningProfile":"' + $legacyTier + '","RecycleMode":true,"SelectedRuleIds":["SandboxOld"]}'), $Utf8NoBom)
+        $legacyBytes = [IO.File]::ReadAllBytes($legacyPath)
+        $migrated = Read-SjcPreferences -Context $context
+        Assert-Equal ('v3 ' + $legacyTier + ' migrates to Low, never to a wider tier') 'Low' ([string]$migrated.CleaningProfile)
+        Assert-True ('v3 ' + $legacyTier + ' migration leaves CustomEnabled false') ($migrated.CustomEnabled -eq $false) ([string]$migrated.CustomEnabled)
+        Assert-True ('v3 ' + $legacyTier + ' migration returns a non-empty MigrationNotice') (-not [string]::IsNullOrWhiteSpace([string]$migrated.MigrationNotice)) ([string]$migrated.MigrationNotice)
+        Assert-Equal ('v3 ' + $legacyTier + ' migration selects the Low preset') ((@(Get-SjcPresetRuleIds -Context $context -CleaningProfile 'Low') | Sort-Object) -join ',') (@($migrated.SelectedRuleIds | Sort-Object) -join ',')
+        Assert-True ('v3 ' + $legacyTier + ' migration preserves the original v3 file bytes') (@(Compare-Object ([byte[]]$legacyBytes) ([IO.File]::ReadAllBytes($legacyPath)) -SyncWindow 0).Count -eq 0) 'v3 bytes changed'
+        $migratedV4 = Read-SjcPreferences -Context $context
+        Assert-Equal ('after ' + $legacyTier + ' migration the v4 file is authoritative') 'Low' ([string]$migratedV4.CleaningProfile)
+        Assert-Equal ('after ' + $legacyTier + ' migration no second notice is shown') '' ([string]$migratedV4.MigrationNotice)
+        Remove-Item -LiteralPath $prefPath -Force
+        Remove-Item -LiteralPath $legacyPath -Force
+    }
 
-    [void](Save-Evidence 'preferences-profile' ([pscustomobject]@{
-        LegacyDefault = $legacy.CleaningProfile
+    # v3 without the field, and v3 with a frozen-invalid tier.
+    [IO.File]::WriteAllText($legacyPath, '{"RecycleMode":false,"SelectedRuleIds":["SandboxOld"]}', $Utf8NoBom)
+    $noTier = Read-SjcPreferences -Context $context
+    Assert-Equal 'v3 without a tier still migrates to Low' 'Low' ([string]$noTier.CleaningProfile)
+    Assert-True 'v3 without a tier still reports the migration notice' (-not [string]::IsNullOrWhiteSpace([string]$noTier.MigrationNotice)) ''
+    Remove-Item -LiteralPath $prefPath -Force; Remove-Item -LiteralPath $legacyPath -Force
+    [IO.File]::WriteAllText($legacyPath, '{"CleaningProfile":"Max","RecycleMode":false,"SelectedRuleIds":["SandboxOld"]}', $Utf8NoBom)
+    Assert-Throws 'v3 with an unknown tier is rejected, not silently defaulted' { Read-SjcPreferences -Context $context } '旧首选项档位无效'
+    Assert-True 'a rejected v3 file is left untouched and un-migrated' ([IO.File]::Exists($legacyPath) -and -not [IO.File]::Exists($prefPath)) ''
+    Remove-Item -LiteralPath $legacyPath -Force
+
+    # 6. Reading preferences never changes the sandbox rule table tier or writes elsewhere.
+    [void](Save-SjcPreferences -Context $context -Preferences ([pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @(); CleaningProfile = 'High'; CustomEnabled = $false }))
+    $highPrefs = Read-SjcPreferences -Context $context
+    Assert-Equal 'a saved High tier is stored and read back' 'High' ([string]$highPrefs.CleaningProfile)
+    Assert-Equal 'reading preferences does not switch the live context tier' 'Medium' ([string]$context.CleaningProfile)
+
+    [void](Save-Evidence 'preferences-v4' ([pscustomobject]@{
         PersistedFields = @($written.PSObject.Properties.Name)
-        RecommendedCount = $recommendedIds.Count
-        DeepRuleCount = $deepIds.Count
-    }))}
+        PersistedProfile = $written.CleaningProfile
+        PersistedCustomEnabled = $written.CustomEnabled
+        MediumPresetCount = @($mediumPreset).Count
+        MigrationNoticeSample = $noTier.MigrationNotice
+    }))
+}
 catch {
     Assert-True ('case completed without unhandled exception: ' + $_.Exception.Message) $false $_.ScriptStackTrace
 }

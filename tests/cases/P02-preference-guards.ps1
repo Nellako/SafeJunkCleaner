@@ -1,6 +1,8 @@
 ﻿#requires -Version 5.1
-# P02: preferences are strictly typed, reject unknown/duplicate/unknown-rule ids,
-# do not accept legacy v2 fields, and never persist into production.
+# P02: preferences are strictly typed, reject unknown/duplicate/unknown-rule ids and
+# out-of-contract fields, never treat a legacy v2 file as authority, and never persist
+# into production. The v4 contract additionally requires an explicit boolean
+# CustomEnabled and a Low/Medium/High tier.
 param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [Parameter(Mandatory = $true)][string]$CaseId,
@@ -13,75 +15,86 @@ try {
     $sandbox = New-OwnedSandbox
     $context = $sandbox.Context
     $stateRoot = $context.StateRoot
-    $prefPath = Join-Path $stateRoot 'preferences-v3.json'
+    $prefPath = Join-Path $stateRoot 'preferences-v4.json'
+    $legacyPath = Join-Path $stateRoot 'preferences-v3.json'
     $rules = @(Get-SjcRules -Context $context)
-    $recommended = @($rules | Where-Object Recommended | ForEach-Object Id)
     $allIds = @($rules | ForEach-Object Id)
+    $mediumPreset = @(Get-SjcPresetRuleIds -Context $context -CleaningProfile 'Medium')
 
-    # Contract requires strict types on save; a missing file may surface as $null
-    # (caller applies defaults) or as a validated defaults object. Both are accepted,
-    # but a returned object must still satisfy the strict shape.
-    $default = Read-SjcPreferences -Context $context
-    if ($null -eq $default) {
-        Assert-True 'missing preferences file returns null (no implicit value)' $true 'null'
-    }
-    else {
-        Assert-True 'default RecycleMode is strictly boolean' ($default.RecycleMode -is [bool]) ([string]$default.RecycleMode)
-        $defaultIds = @($default.SelectedRuleIds)
-        Assert-True 'default selection is an array of known rule ids' (@($defaultIds | Where-Object { $allIds -notcontains $_ }).Count -eq 0 -and $defaultIds.Count -le $allIds.Count) ($defaultIds -join '|')
-    }
-    Assert-True 'reading defaults does not create a preferences file' (-not [IO.File]::Exists($prefPath)) $prefPath
+    # Strict typing on save. A missing file is reported as null so the caller applies
+    # its own default; reading must not create any preference file.
+    Assert-True 'missing preferences file returns null (no implicit value)' ($null -eq (Read-SjcPreferences -Context $context)) 'null'
+    Assert-True 'reading defaults does not create a v4 preferences file' (-not [IO.File]::Exists($prefPath)) $prefPath
+    Assert-True 'reading defaults does not create a v3 preferences file' (-not [IO.File]::Exists($legacyPath)) $legacyPath
 
-    $valid = [pscustomobject]@{ RecycleMode = $false; SelectedRuleIds = @($allIds) }
+    $valid = [pscustomobject]@{ RecycleMode = $false; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = $false }
     Assert-True 'Save-SjcPreferences returns true for valid input' (Save-SjcPreferences -Context $context -Preferences $valid) ''
-    Assert-True 'preferences file written under sandbox state root' ([IO.File]::Exists($prefPath)) $prefPath
+    Assert-True 'preferences file written under the sandbox state root' ([IO.File]::Exists($prefPath)) $prefPath
     $written = Get-Content -LiteralPath $prefPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Assert-Equal 'persisted object has exactly RecycleMode+SelectedRuleIds' 'RecycleMode,SelectedRuleIds' (@($written.PSObject.Properties.Name) -join ',')
+    Assert-Equal 'persisted object has exactly the four contract fields' 'CleaningProfile,CustomEnabled,RecycleMode,SelectedRuleIds' (@($written.PSObject.Properties.Name | Sort-Object) -join ',')
     $readBack = Read-SjcPreferences -Context $context
     Assert-True 'recycle mode round-trips as boolean false' ($readBack.RecycleMode -is [bool] -and -not $readBack.RecycleMode) ([string]$readBack.RecycleMode)
-    Assert-Equal 'selected ids round-trip in order' ($allIds -join '|') (@($readBack.SelectedRuleIds) -join '|')
+    Assert-Equal 'the stored selection is normalized to the Medium preset' ((@($mediumPreset) | Sort-Object) -join '|') ((@($readBack.SelectedRuleIds) | Sort-Object) -join '|')
+    Assert-True 'stored CustomEnabled is forced false' ($readBack.CustomEnabled -eq $false) ([string]$readBack.CustomEnabled)
 
     $before = [IO.File]::ReadAllText($prefPath)
     $badCases = @(
-        @{ Name = 'RecycleMode string is rejected'; Value = [pscustomobject]@{ RecycleMode = 'true'; SelectedRuleIds = @($allIds) } },
-        @{ Name = 'RecycleMode integer is rejected'; Value = [pscustomobject]@{ RecycleMode = 1; SelectedRuleIds = @($allIds) } },
-        @{ Name = 'RecycleMode null is rejected'; Value = [pscustomobject]@{ RecycleMode = $null; SelectedRuleIds = @($allIds) } },
-        @{ Name = 'SelectedRuleIds scalar string is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = 'SandboxOld' } },
-        @{ Name = 'SelectedRuleIds null is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = $null } },
-        @{ Name = 'unknown rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('SandboxOld', 'NotARule') } },
-        @{ Name = 'duplicate rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('SandboxOld', 'SandboxOld') } },
-        @{ Name = 'unknown extra field is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); ScopeMode = 'Deep' } },
-        @{ Name = 'empty-string rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('') } }
+        @{ Name = 'RecycleMode string is rejected'; Value = [pscustomobject]@{ RecycleMode = 'true'; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'RecycleMode integer is rejected'; Value = [pscustomobject]@{ RecycleMode = 1; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'RecycleMode null is rejected'; Value = [pscustomobject]@{ RecycleMode = $null; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'SelectedRuleIds scalar string is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = 'SandboxOld'; CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'SelectedRuleIds null is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = $null; CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'unknown rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('SandboxOld', 'NotARule'); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'duplicate rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @('SandboxOld', 'SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'unknown extra field is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = $false; ScopeMode = 'Old' } },
+        @{ Name = 'empty-string rule id is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @(''); CleaningProfile = 'Medium'; CustomEnabled = $false } },
+        @{ Name = 'missing CustomEnabled is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium' } },
+        @{ Name = 'string CustomEnabled is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Medium'; CustomEnabled = 'false' } },
+        @{ Name = 'frozen Recommended tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Recommended'; CustomEnabled = $false } },
+        @{ Name = 'frozen Deep tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'Deep'; CustomEnabled = $false } },
+        @{ Name = 'lowercase tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CleaningProfile = 'medium'; CustomEnabled = $false } },
+        @{ Name = 'missing tier is rejected'; Value = [pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @($allIds); CustomEnabled = $false } }
     )
     foreach ($bad in $badCases) {
         $badValue = $bad.Value
         Assert-Throws $bad.Name { Save-SjcPreferences -Context $context -Preferences $badValue } ''
     }
     Assert-Equal 'rejected preferences leave the previous file byte-identical' $before ([IO.File]::ReadAllText($prefPath))
-    [void](Save-Evidence 'preferences' ([pscustomobject]@{ Written = $written; AllIds = $allIds; Recommended = $recommended }))
 
-    # Legacy v2 preferences must not override v3 selection.
-    [IO.File]::WriteAllText($prefPath, '{"RecycleMode":false,"ScopeMode":"自定义","AdvancedRuleIds":["SandboxOld"]}', $Utf8NoBom)
+    # A stored v4 with an out-of-date discovered rule id must fail loudly: the GUI then
+    # falls back to the safe Low tier instead of silently keeping a wider scope.
+    $staleId = 'ChromeCache:Profile_98'
+    [IO.File]::WriteAllText($prefPath, ('{"CleaningProfile":"High","CustomEnabled":false,"RecycleMode":true,"SelectedRuleIds":["' + $staleId + '"]}'), $Utf8NoBom)
+    Assert-Throws 'stored v4 with a stale discovered rule id fails loudly' { Read-SjcPreferences -Context $context } '未知或重复规则'
+    Assert-True 'a stale v4 file is left untouched for the GUI fallback path' ([IO.File]::Exists($prefPath)) $prefPath
+    Remove-Item -LiteralPath $prefPath -Force
+
+    # Legacy v2 preferences must never override the v3/v4 selection and must never grant
+    # legacy advanced ids. The file is not migrated because its schema is unknown.
+    [IO.File]::WriteAllText($legacyPath, '{"RecycleMode":false,"ScopeMode":"自定义","AdvancedRuleIds":["SandboxOld"]}', $Utf8NoBom)
     $legacyAccepted = $false
     $legacyResult = $null
     try { $legacyResult = Read-SjcPreferences -Context $context; $legacyAccepted = $true } catch { }
     if ($legacyAccepted) {
         $legacyIds = @($legacyResult.SelectedRuleIds)
         Assert-True 'legacy file does not grant legacy advanced ids' (($legacyIds -join '|') -ne 'SandboxOld') ($legacyIds -join '|')
+        Assert-True 'legacy file cannot widen beyond the Low preset' ((@($legacyIds | Where-Object { @(Get-SjcPresetRuleIds -Context $context -CleaningProfile 'Low') -notcontains $_ })).Count -eq 0) ($legacyIds -join '|')
+        Assert-Equal 'legacy file migrates at most to Low' 'Low' ([string]$legacyResult.CleaningProfile)
     }
     else {
         Assert-True 'legacy file is rejected (failure feedback) instead of silently applied' $true 'Read-SjcPreferences threw'
     }
-    Assert-True 'legacy file read never mutates the file' ([IO.File]::ReadAllText($prefPath) -like '*AdvancedRuleIds*') ''
+    Assert-True 'legacy file read never mutates the file' ([IO.File]::ReadAllText($legacyPath) -like '*AdvancedRuleIds*') ''
 
-    # Corrupt JSON must surface as failure, not defaults.
+    # Corrupt v4 JSON must surface as failure, not defaults.
     [IO.File]::WriteAllText($prefPath, '{not-json', $Utf8NoBom)
     Assert-Throws 'corrupt preferences fail loudly' { Read-SjcPreferences -Context $context } ''
 
     # Production preference file was never touched by this case.
-    $prodPref = Join-Path $script:ProdStateRoot 'preferences-v3.json'
+    $prodPref = Join-Path $script:ProdStateRoot 'preferences-v4.json'
     $prodHash = if ([IO.File]::Exists($prodPref)) { Get-FileSha256 $prodPref } else { 'absent' }
     [void](Save-EvidenceText 'production-pref' ('path=' + $prodPref + '; sha256=' + $prodHash))
+    [void](Save-Evidence 'preferences' ([pscustomobject]@{ Written = $written; AllIds = $allIds; MediumPreset = $mediumPreset }))
 }
 catch {
     Assert-True ('case completed without unhandled exception: ' + $_.Exception.Message) $false $_.ScriptStackTrace

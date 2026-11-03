@@ -1,8 +1,36 @@
 # 版本说明
 
+## v0.12.0（本地交付）
+
+修订后的完整预验收：Core 28／28 用例、1106 断言；Release 34／34 用例、1305 断言，均无失败、阻塞或缺口。固定提交后的最终构建、回归及桌面验收还须全部通过，才可生成成品、更新 LATEST 并由 develop 安全晋级 main；结果以交付清单为准。本次不推送远程、不创建线上 Release。[验收记录](docs/VALIDATION-0.12.0.md)包含初次失败、修复复测与限制，使用变化见[中文版发布说明](docs/RELEASE-0.12.0.zh-CN.md)。
+
+- 保持已认可的弹窗界面，高级自定义内加入“发现缓存位置…”与“系统维护…”两个入口。
+- 高档零保留期仅限精确纯缓存白名单：Chrome／Edge／Brave 的 Cache、Code Cache、GPUCache，Firefox cache2，VS Code Cache／CachedData，新版 Teams 三个精确缓存及经典 Teams GPUCache。Temp、包／构建缓存、诊断资料和显卡着色器仍为正数保留期。零保留期不绕过应用关闭、占用、只读、链接、未来时间和文件身份检查。
+- 分离缓存位置的只读发现与清理授权。来源只有当前进程环境变量 `NUGET_HTTP_CACHE_PATH` 和 `PIP_CACHE_DIR`，不遍历任意配置文件，不接受任意路径输入。授权绑定展示时的来源、精确路径、目录身份和模板；这些内容或策略变化后授权失效，须重新确认；用户可撤销。Worker 独立重新发现并验证，只接受规则 ID，不接受 Root。
+- 新版 Teams 的 WebView2 宿主归属能明确判为无关时不再整类阻断；归属未知、父链变化或权限不足时保守拒绝，不自动结束应用。npm／Python／Java 等共享宿主未细化，保留原守卫，不宣称取消所有误跳过。
+- 系统维护是独立高级操作，唯一动作为系统 DISM 的 `/Online /Cleanup-Image /StartComponentCleanup`，不含 `/ResetBase`。说明影响并确认后才请求 UAC，直接启动系统 DISM，不提升本工具、脚本或任务文件，不支持任意参数，不强杀、不自动重试。旧组件可能立即删除并影响更新回退，释放量无法事前精确统计。
+- 验收门禁新增必需观察 `DiscoveryAuthorizationCancelObserved` 和 `MaintenanceCancelObserved`，发布与晋级均要求 12 项桌面检查；晋级输入显式要求 8 个 src 模块。合成工具自测已扩展到 42 场景；这不替代完整产品回归或真实桌面验收。
+- 候选来源与许可边界：学习设计、独立实现，不复制 GPL／CC BY-SA 材料，LICENSE 及第三方条款不变。实现边界与来源见[引擎决策](docs/decisions-engine-expansion.md)和[候选说明](docs/CANDIDATE-0.12.0.md)。
+- 当前证据边界：主对话已在人工沙箱中实际观察主窗口（v0.12.0，450 个候选）、两个新入口，以及取消高级草稿后原范围与扫描不变。这只是初步诊断，不是最终构建验收，也不替代完整回归。
+- 未验证：真实缓存删除、真实回收站清空、真实 UAC／DISM、完整多 DPI／多显示器矩阵。原始路径、机器名和截图证据不公开。EXE 未签名。本版不宣称性能提升。
+
+## v0.11.0（上一轮本地开发候选，已被 v0.12.0 取代，未发布）
+
+develop 分支上一轮的开发候选，没有正式发布包；正式稳定版本仍为 v0.10.0。本节是历史记录：其回归数字只适用于当时的构建，不适用于 v0.12.0。当时的验收记录见[v0.11.0 验收记录](docs/VALIDATION-0.11.0.md)。以下三档预设、偏好迁移和新版 Teams 精确缓存仍是 v0.12.0 的基础。
+
+- 界面改为单界面流程：结果以分类主表汇总，可展开分页明细，保留例外、取消保留与 CSV 导出继续提供。
+- 低／中／高三档预设替代推荐／深度。选择即应用，普通使用无需逐项勾选；`CleaningProfile` 只接受区分大小写的 `Low`／`Medium`／`High`，旧档位计划须重扫。各档成员与阈值见[规则说明](docs/RULES.md)。
+- 高级自定义默认关闭，重启后不会自动启用；资源管理器图标／缩略图缓存只在高级自定义中提供。
+- 偏好改存 `preferences-v4.json`。新用户默认中档；旧 `preferences-v3.json` 迁移为低档并提示，不沿用旧可选勾选，旧文件保留。
+- 新增新版 Teams 三个固定 WebView2 缓存子目录（Cache、GPUCache、Code Cache），依据微软 VDI 部署文档；需关闭 ms-teams、Teams 与 msedgewebview2，其他使用 WebView2 的应用运行时同样跳过，不结束进程。本机未发现这些目录，实际清理覆盖未验证。
+- 扩大覆盖主要来自预设自动纳入已有类别和新版 Teams 精确缓存，不代表旧版 51 项已全部支持。Vivaldi、Opera、Discord、Teams Classic Code Cache、WER 队列仍未支持。
+- 发布脚本的桌面验收增加 `SingleWindowFlowObserved`、`ThreePresetImmediateApplyObserved`、`AdvancedCustomOffByDefaultObserved` 三项必需观察。
+
+本轮未做性能优化，不宣称加速；历史性能数据保留在[性能报告](docs/ENGINE-PERFORMANCE.md)。真实用户缓存删除未测试；构建未签名。
+
 ## v0.10.0
 
-本轮最新源码版本。2026-11-03从保留的Git stash完整恢复，恢复后的完整Release回归28/28、734断言通过；固定提交的发布验收和产物哈希记录在本地发布清单。历史观察与限制见[验收记录](docs/VALIDATION-0.10.0.md)，恢复过程见[恢复说明](docs/RECOVERY-0.10.0.md)。旧v0.9.0包保留为历史，不代表最新版本。
+当前正式稳定版本。2026-11-03从保留的Git stash完整恢复，恢复后的完整Release回归28/28、734断言通过；固定提交的发布验收和产物哈希记录在本地发布清单。历史观察与限制见[验收记录](docs/VALIDATION-0.10.0.md)，恢复过程见[恢复说明](docs/RECOVERY-0.10.0.md)。旧v0.9.0包保留为历史，不代表最新版本。
 
 - 恢复旧版立绘应用图标，透明区域合成纯白背景，生成七种 ICO 尺寸；用户已确认拥有素材相应权利。
 - 候选页改为紧凑多列表格，规则页增加可见分组、搜索与过滤，统一操作图标与跨页勾选／保留语义。

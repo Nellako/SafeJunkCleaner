@@ -24,7 +24,7 @@ try {
     Assert-Equal 'valid selection returns the requested rule instances' 2 $selected.Count
 
     $task = New-SjcTaskDirectory -Context $context
-    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task
+    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -CustomEnabled $true
     Assert-Equal 'baseline scan is Success with two candidates' 'Success|2' ($scan.Status + '|' + $scan.CandidateCount) $scan.Error
     $metaPath = Join-Path $task 'scan.meta.json'
     Assert-True 'scan.meta.json exists and is sealed (not plaintext JSON)' ([IO.File]::Exists($metaPath) -and -not ((Get-Content -LiteralPath $metaPath -Raw) -match '"PlanHash"')) ''
@@ -60,24 +60,36 @@ try {
         Assert-True ('rule seal is deterministic for ' + $rule.Id) ($seal -ceq (Get-SjcRuleSeal $rule)) $seal
     }
     $sealObj = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
-    # New contract: the seal also pins the profile, both profile ages and the
-    # environment-override denylist, so a profile/age/override change invalidates approval.
-    Assert-Equal 'seal covers identity, profile, both ages and override fields' 'CleaningProfile,DeepMinimumAgeHours,ExcludePatterns,Id,MinimumAgeHours,OverrideEnvironment,Patterns,RecommendedMinimumAgeHours,RequiresClosedProcess,Root,TemplateId' (@($sealObj.PSObject.Properties.Name | Sort-Object) -join ',')
+    # New contract: the seal also pins the profile, both profile ages, the
+    # environment-override denylist, the v0.12 age/process policy and the
+    # discovery-authorization binding, so any of those changing invalidates approval.
+    $expectedSealFields = 'AgePolicy,AuthorizationBinding,AuthorizationId,CleaningProfile,DiscoveryAdapter,DiscoverySource,DiscoverySourceValue,ExcludePatterns,HighMinimumAgeHours,Id,LowMinimumAgeHours,MediumMinimumAgeHours,MinimumAgeHours,OverrideEnvironment,Patterns,PresetLevel,ProcessPolicy,RequiresClosedProcess,Root,RootDirectoryIdentity,TemplateId'
+    Assert-Equal 'seal covers identity, tier, PresetLevel, three tier ages, policy, discovery binding and override fields' $expectedSealFields (@($sealObj.PSObject.Properties.Name | Sort-Object) -join ',')
     Assert-True 'seal includes root, patterns, age and process requirements' ($sealObj.Root -and $sealObj.Patterns -and $sealObj.MinimumAgeHours -and $null -ne $sealObj.RequiresClosedProcess) ''
-    Assert-True 'seal includes the profile and both profile ages' ($sealObj.CleaningProfile -in @('Recommended','Deep') -and $sealObj.RecommendedMinimumAgeHours -gt 0 -and $sealObj.DeepMinimumAgeHours -gt 0) ([string]$sealObj.CleaningProfile + '; rec=' + [string]$sealObj.RecommendedMinimumAgeHours + '; deep=' + [string]$sealObj.DeepMinimumAgeHours)
+    # High may legitimately be 0 for a reviewed pure cache, so the seal assertion checks
+    # Low/Medium positivity and the High value being present and non-negative.
+    Assert-True 'seal includes the tier, PresetLevel and all three tier ages' ($sealObj.CleaningProfile -in @('Low','Medium','High') -and $sealObj.PresetLevel -in @('Low','Medium','High','CustomOnly') -and $sealObj.LowMinimumAgeHours -gt 0 -and $sealObj.MediumMinimumAgeHours -gt 0 -and [double]$sealObj.HighMinimumAgeHours -ge 0) ([string]$sealObj.CleaningProfile + '; level=' + [string]$sealObj.PresetLevel + '; high=' + [string]$sealObj.HighMinimumAgeHours)
+    Assert-True 'seal pins the age policy and process policy' ($sealObj.AgePolicy -cin @('AgeBounded','PureCache') -and $sealObj.ProcessPolicy -cin @('NameGuard','NewTeamsWebView2')) ([string]$sealObj.AgePolicy + '/' + [string]$sealObj.ProcessPolicy)
+    Assert-True 'seal pins an empty discovery binding for a static rule' ([string]::IsNullOrEmpty([string]$sealObj.AuthorizationId) -and [string]::IsNullOrEmpty([string]$sealObj.AuthorizationBinding) -and [string]::IsNullOrEmpty([string]$sealObj.RootDirectoryIdentity)) ('id=' + [string]$sealObj.AuthorizationId)
 
     $changed = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
     $changed.MinimumAgeHours = 1
     Assert-True 'changed age produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($changed | ConvertTo-Json -Depth 5 -Compress)) ''
     $profileChanged = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
-    $profileChanged.CleaningProfile = 'Deep'
-    Assert-True 'changed profile produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($profileChanged | ConvertTo-Json -Depth 5 -Compress)) ''
+    $profileChanged.CleaningProfile = 'High'
+    Assert-True 'changed tier produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($profileChanged | ConvertTo-Json -Depth 5 -Compress)) ''
+    $levelChanged = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
+    $levelChanged.PresetLevel = 'CustomOnly'
+    Assert-True 'changed PresetLevel produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($levelChanged | ConvertTo-Json -Depth 5 -Compress)) ''
+    $ageChanged = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
+    $ageChanged.HighMinimumAgeHours = 1
+    Assert-True 'changed High tier age produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($ageChanged | ConvertTo-Json -Depth 5 -Compress)) ''
 
     # Clean must read the sealed plan, not re-enumerate the sandbox.
-    $clean = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false
+    $clean = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false -CustomEnabled $true
     Assert-Equal 'clean succeeds against the sealed plan' 'Success|2' ($clean.Status + '|' + $clean.Deleted) $clean.Error
     Assert-True 'both sealed candidates are gone from disk' (-not [IO.File]::Exists((Join-Path $files 'sealed-old.tmp')) -and -not [IO.File]::Exists((Join-Path $files 'sealed-old.log'))) ''
-    $second = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false
+    $second = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false -CustomEnabled $true
     Assert-True 'a second clean on the same plan is refused (single-use claim)' ($second.Status -eq 'Failed' -and [int]$second.Deleted -eq 0) ('status=' + $second.Status + '; deleted=' + $second.Deleted + '; error=' + $second.Error)
 
     # Foreign task directory cannot be adopted.

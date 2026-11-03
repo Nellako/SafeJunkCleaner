@@ -15,9 +15,10 @@ try {
 
     Assert-True 'rule inventory is non-empty' ($rules.Count -gt 0) ('count=' + $rules.Count)
 
-    # New contract: profile membership, both profile ages and the override denylist are
-    # part of every rule, so a plan seal can pin them.
-    $requiredProperties = @('Id', 'TemplateId', 'Name', 'Group', 'Risk', 'Recommended', 'Root', 'Patterns', 'ExcludePatterns', 'MinimumAgeHours', 'RecommendedMinimumAgeHours', 'DeepMinimumAgeHours', 'CleaningProfile', 'OverrideEnvironment', 'RequiresClosedProcess', 'Available', 'Note')
+    # New contract: profile membership, both profile ages, the override denylist, the
+    # v0.12 age/process policy and discovery-binding fields are part of every rule, so a
+    # plan seal can pin them.
+    $requiredProperties = @('Id', 'TemplateId', 'Name', 'Group', 'Risk', 'Recommended', 'Root', 'Patterns', 'ExcludePatterns', 'MinimumAgeHours', 'LowMinimumAgeHours', 'MediumMinimumAgeHours', 'HighMinimumAgeHours', 'PresetLevel', 'CleaningProfile', 'OverrideEnvironment', 'RequiresClosedProcess', 'Available', 'Note', 'AgePolicy', 'ProcessPolicy', 'AuthorizationId', 'AuthorizationBinding', 'DiscoveryAdapter', 'DiscoverySource', 'DiscoverySourceValue', 'RootDirectoryIdentity')
     $missing = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rule in $rules) {
         foreach ($property in $requiredProperties) {
@@ -37,13 +38,13 @@ try {
     # is asserted separately below; it is not part of the unconditional base set.
     $expectedBase = @(
         'AmdDxCache', 'AmdDxcCache', 'CrashDumps', 'D3DSCache', 'ExplorerIconCache', 'ExplorerThumbCache',
-        'GoBuildCache', 'GradleCache', 'IntelShaderCache', 'NpmCache', 'NuGetCache', 'NvidiaDXCache',
-        'NvidiaGLCache', 'PipHttpCache', 'PipHttpV2Cache', 'PipWheelCache', 'SteamHtmlCache',
-        'TeamsCache', 'TeamsGPUCache', 'UserTemp', 'VSCodeCache', 'VSCodeCodeCache', 'WERArchive',
-        'WindowsTemp', 'YarnCache'
+        'GoBuildCache', 'GradleCache', 'IntelShaderCache', 'NewTeamsCache', 'NewTeamsCodeCache',
+        'NewTeamsGPUCache', 'NpmCache', 'NuGetCache', 'NvidiaDXCache', 'NvidiaGLCache',
+        'PipHttpCache', 'PipHttpV2Cache', 'PipWheelCache', 'SteamHtmlCache', 'TeamsCache',
+        'TeamsGPUCache', 'UserTemp', 'VSCodeCache', 'VSCodeCodeCache', 'WERArchive', 'WindowsTemp', 'YarnCache'
     ) | Sort-Object
     $baseTemplates = @($baseTemplates | Where-Object { $_ -ne 'FirefoxCache2' })
-    Assert-Equal 'exactly 25 unconditional verified base templates' $expectedBase.Count $baseTemplates.Count ($baseTemplates -join ',')
+    Assert-Equal 'exactly 28 unconditional verified base templates' $expectedBase.Count $baseTemplates.Count ($baseTemplates -join ',')
     $templateDelta = @(Compare-Object -ReferenceObject $expectedBase -DifferenceObject $baseTemplates)
     Assert-Equal 'base template set matches the documented allow-list' 0 $templateDelta.Count (($templateDelta | ForEach-Object { $_.InputObject }) -join ',')
 
@@ -124,35 +125,78 @@ try {
     }
     Assert-True 'browser instances are only Default/Profile N x 3 exact caches' ($browserDelta.Count -eq 0) (($browserDelta | Select-Object -First 10) -join '; ')
 
-    # Profile age contract: Deep may be lower but never higher than Recommended, and the
-    # effective MinimumAgeHours under the Recommended context equals RecommendedMinimumAgeHours.
+    # Tier contract: every rule pins PresetLevel plus all three tier ages, and the
+    # effective MinimumAgeHours under the current context equals the tier's own age.
+    # v0.12 contract: zero is allowed ONLY for HighMinimumAgeHours on the reviewed exact
+    # PureCache template allow-list. Low/Medium stay positive everywhere, and a rule whose
+    # name/group merely contains "Cache" cannot waive age.
+    $pureCacheTemplates = @(
+        'ChromeCache', 'ChromeCodeCache', 'ChromeGPUCache', 'EdgeCache', 'EdgeCodeCache', 'EdgeGPUCache',
+        'BraveCache', 'BraveCodeCache', 'BraveGPUCache', 'FirefoxCache2',
+        'VSCodeCache', 'VSCodeCodeCache', 'NewTeamsCache', 'NewTeamsCodeCache', 'NewTeamsGPUCache', 'TeamsGPUCache'
+    )
     $profileAgeErrors = New-Object 'System.Collections.Generic.List[string]'
-    # Numeric (int or double) is acceptable: Deep floors are assigned as integers by the
-    # profile switch, while Recommended ages come from a [double] parameter.
     $isNumber = { param($v) ($v -is [double] -or $v -is [int] -or $v -is [long] -or $v -is [decimal]) }
+    $validPresetLevels = @('Low', 'Medium', 'High', 'CustomOnly')
+    $zeroWaivers = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rule in $rules) {
-        if ($rule.CleaningProfile -cne 'Recommended') { $profileAgeErrors.Add($rule.Id + ':context-profile=' + $rule.CleaningProfile); continue }
-        if (-not (& $isNumber $rule.RecommendedMinimumAgeHours) -or [double]$rule.RecommendedMinimumAgeHours -le 0) { $profileAgeErrors.Add($rule.Id + ':rec-age-invalid') }
-        if (-not (& $isNumber $rule.DeepMinimumAgeHours) -or [double]$rule.DeepMinimumAgeHours -le 0) { $profileAgeErrors.Add($rule.Id + ':deep-age-invalid') }
-        if ([double]$rule.DeepMinimumAgeHours -gt [double]$rule.RecommendedMinimumAgeHours) { $profileAgeErrors.Add($rule.Id + ':deep-above-rec') }
-        if ([double]$rule.MinimumAgeHours -ne [double]$rule.RecommendedMinimumAgeHours) { $profileAgeErrors.Add($rule.Id + ':effective-mismatch') }
+        if ($rule.CleaningProfile -cne 'Medium') { $profileAgeErrors.Add($rule.Id + ':context-profile=' + $rule.CleaningProfile); continue }
+        if ($rule.PresetLevel -isnot [string] -or $rule.PresetLevel -cnotin $validPresetLevels) { $profileAgeErrors.Add($rule.Id + ':preset-level=' + $rule.PresetLevel) }
+        if ([string]$rule.AgePolicy -cnotin @('AgeBounded', 'PureCache')) { $profileAgeErrors.Add($rule.Id + ':age-policy=' + $rule.AgePolicy) }
+        foreach ($tier in @('Low', 'Medium', 'High')) {
+            $value = $rule.($tier + 'MinimumAgeHours')
+            if (-not (& $isNumber $value) -or [double]$value -lt 0) { $profileAgeErrors.Add($rule.Id + ':' + $tier + '-age-invalid') }
+        }
+        if ([double]$rule.LowMinimumAgeHours -le 0 -or [double]$rule.MediumMinimumAgeHours -le 0) { $profileAgeErrors.Add($rule.Id + ':low-or-medium-zero') }
+        $isPure = $pureCacheTemplates -contains [string]$rule.TemplateId
+        if ($isPure) {
+            if ([double]$rule.HighMinimumAgeHours -ne 0) { $profileAgeErrors.Add($rule.Id + ':pure-high=' + $rule.HighMinimumAgeHours) }
+            if ([string]$rule.AgePolicy -cne 'PureCache') { $profileAgeErrors.Add($rule.Id + ':pure-policy=' + $rule.AgePolicy) }
+        }
+        else {
+            if ([double]$rule.HighMinimumAgeHours -le 0) { $profileAgeErrors.Add($rule.Id + ':non-pure-high=' + $rule.HighMinimumAgeHours) }
+            if ([string]$rule.AgePolicy -cne 'AgeBounded') { $profileAgeErrors.Add($rule.Id + ':bounded-policy=' + $rule.AgePolicy) }
+        }
+        if ([double]$rule.HighMinimumAgeHours -eq 0) {
+            [void]$zeroWaivers.Add([string]$rule.TemplateId)
+            if (-not $isPure) { $profileAgeErrors.Add($rule.Id + ':unauthorized-zero') }
+        }
+        if ([double]$rule.MinimumAgeHours -ne [double]$rule.MediumMinimumAgeHours) { $profileAgeErrors.Add($rule.Id + ':effective-not-medium') }
+        if ([double]$rule.HighMinimumAgeHours -gt [double]$rule.LowMinimumAgeHours) { $profileAgeErrors.Add($rule.Id + ':high-above-low') }
     }
-    Assert-True 'every rule pins profile and both ages, Deep never above Recommended' ($profileAgeErrors.Count -eq 0) (($profileAgeErrors | Select-Object -First 10) -join '; ')
+    Assert-True 'every rule pins PresetLevel and three tier ages; zero only on the reviewed PureCache allow-list' ($profileAgeErrors.Count -eq 0) (($profileAgeErrors | Select-Object -First 10) -join '; ')
+    $zeroOutliers = @($zeroWaivers | Where-Object { $pureCacheTemplates -notcontains $_ } | Sort-Object -Unique)
+    Assert-Equal 'zero-hour High waivers come only from reviewed pure-cache templates' 0 $zeroOutliers.Count ($zeroOutliers -join ',')
+    # Temp/package/build/diagnostic/shader/classic-Teams/Steam keep a positive High age.
+    $positiveHighExpected = @('UserTemp', 'WindowsTemp', 'GradleCache', 'CrashDumps', 'WERArchive', 'NpmCache', 'NuGetCache', 'PipHttpCache', 'PipHttpV2Cache', 'PipWheelCache', 'YarnCache', 'GoBuildCache', 'D3DSCache', 'NvidiaDXCache', 'NvidiaGLCache', 'AmdDxCache', 'AmdDxcCache', 'IntelShaderCache', 'TeamsCache', 'SteamHtmlCache')
+    $unexpectedZero = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($id in $positiveHighExpected) {
+        $rule = @($rules | Where-Object { $_.Id -ceq $id })[0]
+        if ($null -eq $rule) { continue }
+        if ([double]$rule.HighMinimumAgeHours -le 0) { $unexpectedZero.Add($id + '=' + $rule.HighMinimumAgeHours) }
+    }
+    Assert-Equal 'Temp/package/diagnostic/shader/classic-Teams/Steam keep a positive High age' 0 $unexpectedZero.Count ($unexpectedZero -join ',')
+    # A rule that merely looks like cache by name/group must not be granted PureCache.
+    $nameWaivers = @($rules | Where-Object { [string]$_.AgePolicy -ceq 'PureCache' -and $pureCacheTemplates -notcontains [string]$_.TemplateId })
+    Assert-Equal 'no rule earns PureCache from its name, group or note' 0 $nameWaivers.Count (($nameWaivers | ForEach-Object { $_.Id + '=' + $_.TemplateId }) -join ',')
 
-    # Documented Deep thresholds from the approved decision record.
-    $deepExpected = @{
+    # Documented High thresholds from the approved v0.12 decision.
+    $highExpected = @{
         UserTemp = 6; WindowsTemp = 24; GradleCache = 168; CrashDumps = 720; WERArchive = 720
         D3DSCache = 168; NvidiaDXCache = 168; NvidiaGLCache = 168; AmdDxCache = 168; AmdDxcCache = 168; IntelShaderCache = 168
+        VSCodeCache = 0; VSCodeCodeCache = 0; NewTeamsCache = 0; NewTeamsGPUCache = 0; NewTeamsCodeCache = 0
+        TeamsGPUCache = 0; TeamsCache = 24; SteamHtmlCache = 24
+        NpmCache = 24; NuGetCache = 24; PipHttpCache = 24; PipHttpV2Cache = 24; PipWheelCache = 24; YarnCache = 24; GoBuildCache = 24
     }
-    $deepMismatch = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($id in $deepExpected.Keys) {
+    $highMismatch = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($id in $highExpected.Keys) {
         $rule = @($rules | Where-Object { $_.Id -ceq $id })[0]
-        if ($null -eq $rule) { $deepMismatch.Add($id + ':missing'); continue }
-        if ([double]$rule.DeepMinimumAgeHours -ne [double]$deepExpected[$id]) { $deepMismatch.Add($id + '=' + $rule.DeepMinimumAgeHours + ' expected ' + $deepExpected[$id]) }
+        if ($null -eq $rule) { $highMismatch.Add($id + ':missing'); continue }
+        if ([double]$rule.HighMinimumAgeHours -ne [double]$highExpected[$id]) { $highMismatch.Add($id + '=' + $rule.HighMinimumAgeHours + ' expected ' + $highExpected[$id]) }
     }
-    Assert-True 'documented Deep thresholds are exact' ($deepMismatch.Count -eq 0) ($deepMismatch -join '; ')
-    $diagnosticDeep = @($rules | Where-Object { $_.Id -in @('CrashDumps', 'WERArchive') })
-    Assert-True 'diagnostic rules do not lower their age in Deep' (@($diagnosticDeep | Where-Object { [double]$_.DeepMinimumAgeHours -ne [double]$_.RecommendedMinimumAgeHours }).Count -eq 0) (($diagnosticDeep | ForEach-Object { $_.Id + '=' + $_.DeepMinimumAgeHours }) -join ',')
+    Assert-True 'documented High thresholds are exact' ($highMismatch.Count -eq 0) ($highMismatch -join '; ')
+    $diagnosticHigh = @($rules | Where-Object { $_.Id -in @('CrashDumps', 'WERArchive') })
+    Assert-True 'diagnostic rules do not lower their age in High' (@($diagnosticHigh | Where-Object { [double]$_.HighMinimumAgeHours -ne [double]$_.LowMinimumAgeHours }).Count -eq 0) (($diagnosticHigh | ForEach-Object { $_.Id + '=' + $_.HighMinimumAgeHours }) -join ',')
 
     # Environment overrides may only *disable* a rule; they never add a root.
     $overrideErrors = New-Object 'System.Collections.Generic.List[string]'
@@ -178,8 +222,9 @@ try {
 
     $badRisk = @($rules | Where-Object { $_.Risk -notin @('低', '中低', '中', '高') })
     Assert-True 'risk vocabulary is bounded' ($badRisk.Count -eq 0) (($badRisk | ForEach-Object { $_.Id + '=' + $_.Risk }) -join ',')
-    $badAge = @($rules | Where-Object { $_.MinimumAgeHours -isnot [double] -or $_.MinimumAgeHours -le 0 })
-    Assert-True 'every rule has a positive minimum age' ($badAge.Count -eq 0) (($badAge | ForEach-Object Id) -join ',')
+    # The effective age equals the active tier; under Medium every rule stays positive.
+    $badAge = @($rules | Where-Object { ($_.MinimumAgeHours -isnot [double] -and $_.MinimumAgeHours -isnot [int]) -or [double]$_.MinimumAgeHours -le 0 })
+    Assert-True 'every rule has a positive effective Medium minimum age' ($badAge.Count -eq 0) (($badAge | ForEach-Object Id) -join ',')
     $badFlags = @($rules | Where-Object { $_.Recommended -isnot [bool] -or $_.Available -isnot [bool] })
     Assert-True 'Recommended/Available are strict booleans' ($badFlags.Count -eq 0) (($badFlags | ForEach-Object Id) -join ',')
     $badArrays = @($rules | Where-Object { $_.Patterns -is [string] -or $_.ExcludePatterns -is [string] -or $_.RequiresClosedProcess -is [string] })
@@ -199,7 +244,7 @@ try {
         'total=' + $rules.Count,
         'baseTemplates=' + $baseTemplates.Count,
         'browserInstances=' + $browserRules.Count,
-        'recommended=' + @($rules | Where-Object Recommended).Count
+        'low=' + @($rules | Where-Object { $_.PresetLevel -ceq 'Low' }).Count, 'medium=' + @($rules | Where-Object { $_.PresetLevel -ceq 'Medium' }).Count, 'high=' + @($rules | Where-Object { $_.PresetLevel -ceq 'High' }).Count, 'customOnly=' + @($rules | Where-Object { $_.PresetLevel -ceq 'CustomOnly' }).Count
     ) -join "`n") | Out-Null
 }
 catch {

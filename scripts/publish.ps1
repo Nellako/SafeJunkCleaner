@@ -15,14 +15,14 @@ $verification=[IO.Path]::GetFullPath($VerificationDirectory)
 $manifest=Get-Content -LiteralPath (Join-Path $build 'build-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $summary=Get-Content -LiteralPath (Join-Path $verification 'summary.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $gui=Get-Content -LiteralPath $GuiAcceptancePath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($manifest.Version -ne $version -or $summary.Status -ne 'Passed' -or $summary.Scope -ne 'Release' -or $summary.Blocked -ne 0 -or $summary.Failed -ne 0) { throw 'A matching v3 release regression is required.' }
+if ($manifest.Version -ne $version -or $summary.Status -ne 'Passed' -or $summary.Scope -ne 'Release' -or $summary.Blocked -ne 0 -or $summary.Failed -ne 0) { throw 'A matching current-version release regression is required.' }
 if (@($summary.CoverageGaps).Count -gt 0) { throw 'Regression coverage gaps remain.' }
 if ($gui.Status -ne 'Passed' -or @($gui.Checks).Count -eq 0 -or @($gui.Checks | Where-Object { -not $_.Passed }).Count -gt 0) { throw 'Actual desktop GUI acceptance evidence is required.' }
 $guiSourceHash=(Get-FileHash -LiteralPath (Join-Path $root 'src\Gui.ps1') -Algorithm SHA256).Hash
 if ($gui.GuiSourceSHA256 -ne $guiSourceHash) { throw 'GUI acceptance evidence does not match the current interface source.' }
 $iconHash=(Get-FileHash -LiteralPath (Join-Path $root 'assets\app.ico') -Algorithm SHA256).Hash
 if (-not $gui.PSObject.Properties['IconSHA256'] -or $gui.IconSHA256 -ne $iconHash) { throw 'GUI acceptance evidence does not match the current application icon.' }
-foreach($name in @('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved')) {
+foreach($name in @('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved','SingleWindowFlowObserved','ThreePresetImmediateApplyObserved','AdvancedCustomOffByDefaultObserved','DiscoveryAuthorizationCancelObserved','MaintenanceCancelObserved')) {
     $check=@($gui.Checks | Where-Object { $_.Name -eq $name -and $_.Passed -is [bool] -and $_.Passed })
     if ($check.Count -ne 1) { throw "Missing desktop acceptance check: $name" }
 }
@@ -70,7 +70,7 @@ if ($testedExeHash -ne $exeRecords[0].SHA256 -or (Get-FileHash -LiteralPath $exe
 foreach($record in $manifest.Files) {
     if ((Get-FileHash -LiteralPath (Join-Path $build $record.Name) -Algorithm SHA256).Hash -ne $record.SHA256) { throw "Build artifact changed: $($record.Name)" }
 }
-$publicDocuments=@('README.md','LICENSE','CHANGELOG.md','THIRD-PARTY-NOTICES.md','docs\SAFETY.md','docs\DEVELOPMENT.md','docs\RULES.md','docs\CACHE-EVIDENCE.md','docs\RULE-MIGRATION.md','docs\ENGINE-PERFORMANCE.md','docs\UI-COMPARISON.md','docs\LOCAL-PROMOTION.md','docs\decisions-cleaner-next-iteration.md','assets\third-party\PS2EXE-LICENSE.txt')
+$publicDocuments=@('README.md','LICENSE','CHANGELOG.md','THIRD-PARTY-NOTICES.md','docs\SAFETY.md','docs\DEVELOPMENT.md','docs\RULES.md','docs\CACHE-EVIDENCE.md','docs\RULE-MIGRATION.md','docs\ENGINE-PERFORMANCE.md','docs\UI-COMPARISON.md','docs\CANDIDATE-0.12.0.md','docs\VALIDATION-0.12.0.md','docs\VALIDATION-0.11.0.md','docs\RECOVERY-0.10.0.md','docs\VALIDATION-0.10.0.md','docs\decisions-popup-ui.md','docs\LOCAL-PROMOTION.md','docs\RELEASE-0.12.0.zh-CN.md','docs\decisions-engine-expansion.md','assets\third-party\PS2EXE-LICENSE.txt')
 foreach($relative in $publicDocuments) {
     if (-not [IO.File]::Exists((Join-Path $root $relative))) { throw "Release documentation missing: $relative" }
 }

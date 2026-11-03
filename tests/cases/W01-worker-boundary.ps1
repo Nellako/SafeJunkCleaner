@@ -16,33 +16,44 @@ try {
     $task = New-SjcTaskDirectory -Context $context
 
     # New contract: Scan/Clean payloads must carry an exact-case CleaningProfile.
-    $validScan = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended' }
+    $validScan = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $true }
     $why = ''
     try { Assert-SjcWorkerPayload -Payload $validScan -Mode 'Scan'; $ok = $true } catch { $ok = $false; $why = $_.Exception.Message }
     Assert-True 'valid Scan payload with CleaningProfile is accepted' $ok ([string]$why)
 
-    $validClean = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = $false; CleaningProfile = 'Deep' }
+    $validClean = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = $false; CleaningProfile = 'High'; CustomEnabled = $false }
     try { Assert-SjcWorkerPayload -Payload $validClean -Mode 'Clean'; $ok = $true } catch { $ok = $false; $why = $_.Exception.Message }
     Assert-True 'valid Clean payload with CleaningProfile is accepted' $ok ([string]$why)
 
     $badPayloads = @(
-        @{ Name = 'TestRoot in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended'; TestRoot = $sandbox.Root } },
-        @{ Name = 'Root in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended'; Root = 'C:\Temp' } },
-        @{ Name = 'ApprovedPath in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended'; ApprovedPath = 'x' } },
-        @{ Name = 'RuleIds scalar string is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = 'SandboxOld'; CleaningProfile = 'Recommended' } },
-        @{ Name = 'RuleIds int array is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @(1, 2); CleaningProfile = 'Recommended' } },
-        @{ Name = 'TaskDirectory missing is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended' } },
-        @{ Name = 'CancelPath non-string is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = 1; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended' } },
-        @{ Name = 'Clean RecycleMode string is rejected'; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = 'true'; CleaningProfile = 'Recommended' } },
-        @{ Name = 'Clean ExcludedIds scalar is rejected'; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = 'abc'; RecycleMode = $false; CleaningProfile = 'Recommended' } },
-        @{ Name = 'Scan mode rejects Clean-only fields' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Recommended'; ExcludedIds = @(); RecycleMode = $false } },
-        @{ Name = 'Scan payload without CleaningProfile is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld') } },
-        @{ Name = 'Clean payload without CleaningProfile is rejected' ; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = $false } },
-        @{ Name = 'CleaningProfile lowercase is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'recommended' } },
-        @{ Name = 'CleaningProfile unknown value is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Deepest' } },
-        @{ Name = 'CleaningProfile non-string is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 1 } },
-        @{ Name = 'CleaningProfile empty string is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = '' } }
+        @{ Name = 'TestRoot in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $true; TestRoot = $sandbox.Root } },
+        @{ Name = 'Root in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; Root = 'C:\Temp'; CustomEnabled = $true } },
+        @{ Name = 'ApprovedPath in payload is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; ApprovedPath = 'x'; CustomEnabled = $true } },
+        @{ Name = 'RuleIds scalar string is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = 'SandboxOld'; CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'RuleIds int array is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @(1, 2); CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'TaskDirectory missing is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'CancelPath non-string is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = 1; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'Clean RecycleMode string is rejected'; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = 'true'; CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'Clean ExcludedIds scalar is rejected'; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = 'abc'; RecycleMode = $false; CleaningProfile = 'Medium'; CustomEnabled = $true } },
+        @{ Name = 'Scan mode rejects Clean-only fields' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; ExcludedIds = @(); RecycleMode = $false; CustomEnabled = $true } },
+        @{ Name = 'Scan payload without CleaningProfile is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CustomEnabled = $true } },
+        @{ Name = 'Clean payload without CleaningProfile is rejected' ; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = $false; CustomEnabled = $true } },
+        @{ Name = 'CleaningProfile lowercase is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'medium'; CustomEnabled = $true } },
+        @{ Name = 'CleaningProfile unknown value is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Maximum'; CustomEnabled = $true } },
+        @{ Name = 'CleaningProfile non-string is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 1; CustomEnabled = $true } },
+        @{ Name = 'CleaningProfile empty string is rejected' ; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = ''; CustomEnabled = $true } }
     )
+    # CustomEnabled is a mode, so the payload must state it explicitly and as a boolean.
+    $modeCases = @(
+        @{ Name = 'Scan payload without CustomEnabled is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium' } },
+        @{ Name = 'Scan payload with string CustomEnabled is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = 'true' } },
+        @{ Name = 'Scan payload with integer CustomEnabled is rejected'; Mode = 'Scan'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; RuleIds = @('SandboxOld'); CleaningProfile = 'Medium'; CustomEnabled = 1 } },
+        @{ Name = 'Clean payload without CustomEnabled is rejected'; Mode = 'Clean'; Payload = [pscustomobject]@{ TaskDirectory = $task; CancelPath = ''; ProgressPath = ''; ExcludedIds = @(); RecycleMode = $false; CleaningProfile = 'Medium' } }
+    )
+    foreach ($bad in $modeCases) {
+        $payload = $bad.Payload; $mode = $bad.Mode
+        Assert-Throws $bad.Name { Assert-SjcWorkerPayload -Payload $payload -Mode $mode } 'CustomEnabled'
+    }
     foreach ($bad in $badPayloads) {
         $payload = $bad.Payload; $mode = $bad.Mode
         Assert-Throws $bad.Name { Assert-SjcWorkerPayload -Payload $payload -Mode $mode } ''
@@ -65,7 +76,7 @@ try {
     $fakeTaskDir = Join-Path $sandbox.Root ('not-a-task-' + [guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($fakeTaskDir)
     $fakePayload = Join-Path $fakeTaskDir 'payload.json'
-    [IO.File]::WriteAllText($fakePayload, '{"TaskDirectory":"' + $fakeTaskDir.Replace('\', '\\') + '","CancelPath":"","ProgressPath":"","RuleIds":["SandboxOld"]}', $Utf8NoBom)
+    [IO.File]::WriteAllText($fakePayload, '{"TaskDirectory":"' + $fakeTaskDir.Replace('\', '\\') + '","CancelPath":"","ProgressPath":"","RuleIds":["SandboxOld"],"CleaningProfile":"Medium","CustomEnabled":true}', $Utf8NoBom)
     $fakeOutput = Join-Path $fakeTaskDir 'result.json'
     $workerResult = Invoke-SjcWorker -Mode 'Scan' -PayloadPath $fakePayload -OutputPath $fakeOutput
     Assert-True 'worker rejects a payload outside any trusted task directory' ($workerResult.Status -eq 'Failed') ('status=' + $workerResult.Status + '; error=' + $workerResult.Error)

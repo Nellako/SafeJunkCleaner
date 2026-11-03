@@ -25,30 +25,35 @@ try {
     [void][IO.Directory]::CreateDirectory($outside)
     New-TestFile -Path (Join-Path $outside 'must-not-be-seen.tmp') -Bytes 128 -AgeHours 120 | Out-Null
 
-    # Rule double: same sandbox root, but with an override denylist entry.
+    # Rule double: same sandbox root, but with an override denylist entry. Built through
+    # the product constructor so every v0.12 seal field is present; only the override
+    # environment name is added.
     $originalRules = ${function:Get-SjcRules}
     $script:n04Sandbox = $sandbox.Root
     $script:n04Active = $true
+    $script:n04Variable = $variableName
+    function New-N04OverrideRuleDouble {
+        param([string]$Root, [string]$VariableName)
+        $rule = New-SjcRule -Id 'SandboxOld' -TemplateId 'SandboxOld' -Name 'override-double' -Group 'test' -Root $Root -Patterns @('*.tmp') -MinimumAgeHours 24 -Recommended $true -OverrideEnvironment @($VariableName)
+        $rule.PresetLevel = 'Low'; $rule.CleaningProfile = 'Medium'
+        $rule.LowMinimumAgeHours = 24; $rule.MediumMinimumAgeHours = 24; $rule.HighMinimumAgeHours = 24
+        $rule.MinimumAgeHours = 24; $rule.RecommendedMinimumAgeHours = 24; $rule.DeepMinimumAgeHours = 24
+        return $rule
+    }
     function Get-SjcRules {
         param($Context)
         if ($script:n04Active) {
             $root = Join-Path $script:n04Sandbox 'files'
-            return @([pscustomobject]@{
-                Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = 'override-double'; Group = 'test'; Risk = '低'
-                Recommended = $true; Root = $root; Patterns = @('*.tmp'); ExcludePatterns = @(); MinimumAgeHours = 24
-                RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'
-                OverrideEnvironment = @($script:n04Variable); RequiresClosedProcess = @(); Available = $true; Note = 'override double'
-            })
+            return @(New-N04OverrideRuleDouble -Root $root -VariableName $script:n04Variable)
         }
         & $script:n04OriginalRules -Context $Context
     }
     $script:n04OriginalRules = $originalRules
-    $script:n04Variable = $variableName
 
     # Baseline: no override variable -> normal scan.
     [Environment]::SetEnvironmentVariable($variableName, $null)
     $baselineTask = New-SjcTaskDirectory -Context $context
-    $baselineScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $baselineTask
+    $baselineScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $baselineTask -CustomEnabled $true
     Assert-Equal 'without an override variable the scan succeeds' 'Success' $baselineScan.Status $baselineScan.Error
     Assert-Equal 'without an override variable both sandbox files are candidates' 2 ([int64]$baselineScan.CandidateCount) ''
 
@@ -58,7 +63,7 @@ try {
         Assert-Equal 'the override variable is visible to this process' $outside ([Environment]::GetEnvironmentVariable($variableName))
 
         $blockedTask = New-SjcTaskDirectory -Context $context
-        $blockedScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $blockedTask
+        $blockedScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $blockedTask -CustomEnabled $true
         [void](Save-Evidence 'blocked-scan' $blockedScan)
         Assert-Equal 'scan with a set override is Partial, never Success' 'Partial' $blockedScan.Status $blockedScan.Error
         $blockedCategory = @($blockedScan.Categories)[0]
@@ -74,13 +79,13 @@ try {
         # Unset: scanning works again, proving the gate is conditional.
         [Environment]::SetEnvironmentVariable($variableName, $null, 'Process')
         $recoveredTask = New-SjcTaskDirectory -Context $context
-        $recoveredScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $recoveredTask
+        $recoveredScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $recoveredTask -CustomEnabled $true
         Assert-Equal 'clearing the override restores a successful scan' 'Success' $recoveredScan.Status $recoveredScan.Error
         Assert-Equal 'clearing the override restores the two candidates' 2 ([int64]$recoveredScan.CandidateCount) ''
 
         # Set the override AFTER sealing: per-file revalidation must block all deletion.
         [Environment]::SetEnvironmentVariable($variableName, $outside, 'Process')
-        $lateClean = Invoke-SjcClean -Context $context -TaskDirectory $recoveredTask -RecycleMode $false
+        $lateClean = Invoke-SjcClean -Context $context -TaskDirectory $recoveredTask -RecycleMode $false -CustomEnabled $true
         [void](Save-Evidence 'late-override-clean' $lateClean)
         Assert-True 'a clean with a late-set override does not report Success' ($lateClean.Status -ne 'Success') ([string]$lateClean.Status)
         Assert-Equal 'a clean with a late-set override deletes nothing' 0 ([int64]$lateClean.Deleted) ([string]$lateClean.Deleted)
@@ -99,7 +104,7 @@ try {
     ${function:Get-SjcRules} = $script:n04OriginalRules
     Assert-Equal 'the test override variable is restored to its original value' ([string]$originalVariable) ([string]([Environment]::GetEnvironmentVariable($variableName)))
     $normalTask = New-SjcTaskDirectory -Context $context
-    $normalScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $normalTask
+    $normalScan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $normalTask -CustomEnabled $true
     Assert-Equal 'real rule table scans normally after the fixture is removed' 'Success' $normalScan.Status $normalScan.Error
 
     [void](Save-Evidence 'override-gate' ([pscustomobject]@{

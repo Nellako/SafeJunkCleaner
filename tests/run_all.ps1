@@ -59,9 +59,15 @@ $script:AllCases = @(
     [pscustomobject]@{ Id = 'N04-override-gate'; Name = '覆盖变量仅禁用/UnsupportedConfiguration/逐文件重验'; File = 'N04-override-gate.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N05-icon-white-background'; Name = '白底图标 7 尺寸/纯白角/不透明/居中/PNG256'; File = 'N05-icon-white-background.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N06-local-promotion'; Name = '晋级工具独立自测 30 项 + 真实只读预检 + 云标签静态守卫'; File = 'N06-local-promotion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N07-preset-custom-authorization'; Name = '三档预设集合包含关系/年龄表/CustomOnly/预设精确集合/Custom 授权/封存模式'; File = 'N07-preset-custom-authorization.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N08-tier-cleanup-layout'; Name = '三档真实新增布局扫描/NewTeams三子根/旁路业务文件保护/逐档清理'; File = 'N08-tier-cleanup-layout.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N09-engine-expansion'; Name = '精确PureCache白名单0/零年龄不绕过其他闸门/Teams WebView2归属(隔离mock)'; File = 'N09-engine-expansion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N10-cache-discovery'; Name = 'NuGet/pip精确布局/展示绑定/失效撤销/Worker拒绝路径注入'; File = 'N10-cache-discovery.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N11-maintenance-contract'; Name = '固定DISM规格/签名拒绝/TestMode/启动结果(隔离mock)'; File = 'N11-maintenance-contract.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'G01-gui-selftest'; Name = 'Test-SjcGui 无破坏状态/冻结/快照/分页'; File = 'G01-gui-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'G02-background-preview'; Name = '真实后台分页/导出/保留/失败取消恢复'; File = 'G02-background-preview.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'G03-profile-ui'; Name = '档位控件/严格载荷/失效重扫/确认窗口档位'; File = 'G03-profile-ui.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
+    [pscustomobject]@{ Id = 'G04-expansion-ui'; Name = '测试上下文/失效授权/发现维护取消/维护结果与释放'; File = 'G04-expansion-ui.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'W02-worker-selftest'; Name = 'Main SelfTest 完整沙箱 + 严格退出码'; File = 'W02-worker-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'X01-exe-selftest'; Name = 'EXE 版本/签名/SelfTest 输出/图标资源'; File = 'X01-exe-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $true; Sta = $false }
 )
@@ -131,7 +137,7 @@ function Get-SourceHashes {
     $records = [System.Collections.Generic.List[object]]::new()
     # Icon and build-script bytes are acceptance inputs: changing either must invalidate a
     # previous acceptance, so they belong in the same hash set publish/promotion compare.
-    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'scripts\build.ps1', 'assets\app.ico')) {
+    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'scripts\build.ps1', 'assets\app.ico')) {
         $record = Get-SourceRecord (Join-Path $script:RepoRoot $relative) -Optional
         if ($null -ne $record) { $records.Add($record) }
     }
@@ -235,7 +241,7 @@ function Write-Summary {
 # ---- source gates -----------------------------------------------------------
 if (-not [IO.File]::Exists($script:PowerShellPath)) { Add-GateError ('缺少 Windows PowerShell 5.1：' + $script:PowerShellPath) }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { Add-GateError '本套件只支持 Windows。' }
-$requiredModules = @('src\Rules.ps1', 'src\Core.ps1', 'src\Worker.ps1')
+$requiredModules = @('src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1')
 foreach ($relative in $requiredModules) {
     $full = Join-Path $script:RepoRoot $relative
     if (-not [IO.File]::Exists($full)) { Add-GateError ('缺少模块：' + $relative); continue }

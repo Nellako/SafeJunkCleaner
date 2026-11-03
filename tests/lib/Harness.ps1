@@ -63,6 +63,8 @@ $script:ProdSnapshotBeforeLoad = Get-PathSnapshot $script:ProdStateRoot
 . (Join-Path $RepoRoot 'src\Version.ps1')
 . (Join-Path $RepoRoot 'src\Rules.ps1')
 . (Join-Path $RepoRoot 'src\Core.ps1')
+. (Join-Path $RepoRoot 'src\Discovery.ps1')
+. (Join-Path $RepoRoot 'src\Maintenance.ps1')
 . (Join-Path $RepoRoot 'src\Worker.ps1')
 
 if ($LoadGui) {

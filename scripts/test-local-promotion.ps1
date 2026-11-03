@@ -47,9 +47,11 @@ try {
     }
     $null=Invoke-LpGit $source @('init','-b','develop')
     $null=Invoke-LpGit $source @('config','core.autocrlf','false')
-    $ids=@('R01-rule-inventory','R02-browser-discovery','R03-rule-approval-seal','P01-path-guards','P02-preference-guards','P03-preview-session','S01-scan-core','S02-same-root-dedupe','S03-scan-links','C01-clean-core','C02-clean-tamper','C03-clean-error-cap','C04-cancel','C05-pagination-export','L01-logging','W01-worker-boundary','V01-version-contract','G01-gui-selftest','G02-background-preview','W02-worker-selftest','X01-exe-selftest','Z99-added-case')
-    foreach ($p in @('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Worker.ps1','src/Gui.ps1','scripts/build.ps1','assets/app.ico','tests/cases/synthetic.ps1')) { Write-TestText (Join-Path $source $p) ('synthetic fixture '+$p) }
-    Write-TestJson (Join-Path $source 'version.json') @{version='0.10.0'}
+    $ids=@('R01-rule-inventory','R02-browser-discovery','R03-rule-approval-seal','P01-path-guards','P02-preference-guards','P03-preview-session','S01-scan-core','S02-same-root-dedupe','S03-scan-links','C01-clean-core','C02-clean-tamper','C03-clean-error-cap','C04-cancel','C05-pagination-export','L01-logging','W01-worker-boundary','V01-version-contract','G01-gui-selftest','G02-background-preview','W02-worker-selftest','X01-exe-selftest','Z98-added-case','Z99-added-case')
+    foreach ($p in @('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Discovery.ps1','src/Maintenance.ps1','src/Worker.ps1','src/Gui.ps1','scripts/build.ps1','assets/app.ico','tests/cases/synthetic.ps1')) { Write-TestText (Join-Path $source $p) ('synthetic fixture '+$p) }
+    Write-TestText (Join-Path $source 'src/Version.ps1') "function Get-SjcVersion { '0.12.0' }"
+    Write-TestText (Join-Path $source 'scripts/publish.ps1') ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'publish.ps1')))
+    Write-TestJson (Join-Path $source 'version.json') @{version='0.12.0'}
     Write-TestText (Join-Path $source '.gitignore') "ignored/`nincoming-*`n"
     $declaration='$script:AllCases = @(' + "`r`n" + (($ids | ForEach-Object { "[pscustomobject]@{Id='$_'}" }) -join "`r`n") + "`r`n)"
     Write-TestText (Join-Path $source 'tests/run_all.ps1') $declaration
@@ -69,14 +71,14 @@ try {
     $capture=Join-Path $evidence 'build-inputs.json'
     $null=& $seal -SourceRepository $source -ExpectedSourceHead $next -OutputPath $capture -CaptureBuildInputs -Confirm:$false
     $repo=Get-LpRepository $source 'develop'
-    $sources=@('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Worker.ps1','src/Gui.ps1','version.json','scripts/build.ps1','assets/app.ico') | ForEach-Object { [pscustomobject]@{Path=$_;SHA256=(Get-LpHash (Join-Path $source $_))} }
+    $sources=@('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Discovery.ps1','src/Maintenance.ps1','src/Worker.ps1','src/Gui.ps1','version.json','scripts/build.ps1','assets/app.ico') | ForEach-Object { [pscustomobject]@{Path=$_;SHA256=(Get-LpHash (Join-Path $source $_))} }
     $exe=Join-Path $evidence 'synthetic.exe'; $scriptArtifact=Join-Path $evidence 'synthetic.ps1'
     Write-TestText $exe 'NOT A REAL EXE - local gate fixture only'
     Write-TestText $scriptArtifact 'synthetic build artifact'
     $files=@($exe,$scriptArtifact) | ForEach-Object { [pscustomobject]@{Name=[IO.Path]::GetFileName($_);SHA256=(Get-LpHash $_);Bytes=([IO.FileInfo]$_).Length} }
     $now=[datetime]::UtcNow.ToString('o')
     $manifest=Join-Path $evidence 'build-manifest.json'
-    Write-TestJson $manifest @{Version='0.10.0';BuiltUtc=$now;BuildId='synthetic';BuildTool=@{Name='ps2exe';Version='1.0.18'};Sources=@($sources);Files=@($files)}
+    Write-TestJson $manifest @{Version='0.12.0';BuiltUtc=$now;BuildId='synthetic';BuildTool=@{Name='ps2exe';Version='1.0.18'};Sources=@($sources);Files=@($files)}
     $results=@()
     foreach ($id in $ids) {
         $result=Join-Path $evidence ($id+'.json'); $out=Join-Path $evidence ($id+'.out'); $err=Join-Path $evidence ($id+'.err')
@@ -91,7 +93,7 @@ try {
     Write-TestJson $summary $summaryValue
     $screen=Join-Path $evidence 'desktop.synthetic.txt'; Write-TestText $screen 'NOT actual GUI evidence - synthetic gate fixture'
     $gui=Join-Path $evidence 'gui.json'
-    Write-TestJson $gui @{Status='Passed';AcceptedUtc=$now;GuiSourceSHA256=(Get-LpHash (Join-Path $source 'src/Gui.ps1'));IconSHA256=(Get-LpHash (Join-Path $source 'assets/app.ico'));Checks=@(@('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved') | ForEach-Object { @{Name=$_;Passed=$true} });EvidenceFiles=@($screen)}
+    Write-TestJson $gui @{Status='Passed';AcceptedUtc=$now;GuiSourceSHA256=(Get-LpHash (Join-Path $source 'src/Gui.ps1'));IconSHA256=(Get-LpHash (Join-Path $source 'assets/app.ico'));Checks=@(@('DesktopWindowObserved','RuleSelectionObserved','CandidatePagingAndKeepRestore','NoProductionDeletion','WhiteBackgroundIconObserved','CompactLayoutObserved','CleaningProfileConfirmationObserved','SingleWindowFlowObserved','ThreePresetImmediateApplyObserved','AdvancedCustomOffByDefaultObserved','DiscoveryAuthorizationCancelObserved','MaintenanceCancelObserved') | ForEach-Object { @{Name=$_;Passed=$true} });EvidenceFiles=@($screen)}
     $envelope=Join-Path $evidence 'promotion.json'
     Test-Case 'seal complete commit-bound synthetic acceptance including added case' {
         $null=& $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $summary -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath $envelope -Confirm:$false
@@ -165,13 +167,33 @@ try {
         $bad=Join-Path $evidence 'bad.json'; Write-TestJson $bad @{Status='Passed'}
         Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $bad -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath (Join-Path $evidence 'bad-seal.json') -Confirm:$false } 'StartedUtc'
     }
-    Test-Case 'added runner case cannot be omitted' {
-        $bytes=[IO.File]::ReadAllBytes($summary); $v=Get-LpJson $summary; $v.Results=@($v.Results | Where-Object Id -ne 'Z99-added-case'); Write-TestJson $summary $v
+    foreach ($addedId in @('Z98-added-case','Z99-added-case')) {
+    Test-Case "AST-declared runner case $addedId cannot be omitted" {
+        $bytes=[IO.File]::ReadAllBytes($summary); $v=Get-LpJson $summary; $v.Results=@($v.Results | Where-Object Id -ne $addedId); Write-TestJson $summary $v
         try { Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $summary -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath (Join-Path $evidence 'missing-case.json') -Confirm:$false } 'Missing/duplicate Release case' } finally { [IO.File]::WriteAllBytes($summary,$bytes) }
     }
-    Test-Case 'missing new GUI observation cannot seal' {
-        $bytes=[IO.File]::ReadAllBytes($gui); $v=Get-LpJson $gui; $v.Checks=@($v.Checks | Where-Object Name -ne 'CompactLayoutObserved'); Write-TestJson $gui $v
-        try { Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $summary -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath (Join-Path $evidence 'missing-gui.json') -Confirm:$false } 'Missing actual desktop acceptance' } finally { [IO.File]::WriteAllBytes($gui,$bytes) }
+    }
+    foreach ($inputPath in @('src/Discovery.ps1','src/Maintenance.ps1')) {
+        foreach ($inputKind in @('manifest','summary','capture')) {
+            Test-Case "missing $inputPath in $inputKind blocks sealing" {
+                $inputFile=@{manifest=$manifest;summary=$summary;capture=$capture}[$inputKind]
+                $bytes=[IO.File]::ReadAllBytes($inputFile); $v=Get-LpJson $inputFile
+                if ($inputKind -eq 'summary') { $v.SourceHashes=@($v.SourceHashes | Where-Object Path -ne $inputPath) }
+                else { $v.Sources=@($v.Sources | Where-Object Path -ne $inputPath) }
+                Write-TestJson $inputFile $v
+                $reason=if ($inputKind -eq 'capture') { 'Build input snapshot differs' } else { 'Required input hash missing: '+$inputPath }
+                try { Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $summary -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath (Join-Path $evidence 'missing-input.json') -Confirm:$false } $reason } finally { [IO.File]::WriteAllBytes($inputFile,$bytes) }
+            }
+        }
+    }
+    foreach ($guiName in @('CompactLayoutObserved','SingleWindowFlowObserved','ThreePresetImmediateApplyObserved','AdvancedCustomOffByDefaultObserved','DiscoveryAuthorizationCancelObserved','MaintenanceCancelObserved')) {
+    Test-Case "missing GUI observation $guiName cannot seal or publish" {
+        $bytes=[IO.File]::ReadAllBytes($gui); $v=Get-LpJson $gui; $v.Checks=@($v.Checks | Where-Object Name -ne $guiName); Write-TestJson $gui $v
+        try {
+            Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -BuildManifestPath $manifest -SummaryPath $summary -GuiAcceptancePath $gui -BuildInputsPath $capture -OutputPath (Join-Path $evidence 'missing-gui.json') -Confirm:$false } ('Missing actual desktop acceptance: '+$guiName)
+            Expect-Blocked { & (Join-Path $source 'scripts/publish.ps1') -BuildDirectory $evidence -VerificationDirectory $evidence -GuiAcceptancePath $gui } ('Missing desktop acceptance check: '+$guiName)
+        } finally { [IO.File]::WriteAllBytes($gui,$bytes) }
+    }
     }
     Test-Case 'expired original acceptance cannot be re-sealed' {
         $bytes=[IO.File]::ReadAllBytes($summary); $v=Get-LpJson $summary; $v.StartedUtc=[datetime]::UtcNow.AddHours(-73).ToString('o'); Write-TestJson $summary $v

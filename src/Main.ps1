@@ -21,7 +21,7 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 # <SJC-MODULES>
 
 if (-not (Get-Command Start-SjcGui -ErrorAction SilentlyContinue)) {
-    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Worker.ps1','Gui.ps1')) {
+    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1')) {
         . (Join-Path $PSScriptRoot $moduleName)
     }
 }

@@ -17,9 +17,12 @@ try {
     $clock=[Diagnostics.Stopwatch]::StartNew();Start-SjcGuiLocalJob $app 'Open' @{PlanPath=$scan.PlanPath};$launchMs=$clock.Elapsed.TotalMilliseconds
     Assert-True 'opening schedules async work' ($null -ne $state.LocalJob -and $state.Busy)
     Assert-True 'scan and mode frozen during preview' (-not $app.Ui.ScanButton.IsEnabled -and -not $app.Ui.RecycleMode.IsEnabled)
-    Set-SjcGuiPage $app 'Files';Assert-Equal 'navigation works while busy' 'Files' $state.Page
+    Set-SjcGuiPanel $app 'Files' $true;Assert-True 'file details remain accessible while busy' $state.FilesExpanded
     Wait-PreviewJob $app
     Assert-Equal 'background opens full first page' 200 $state.PageItems.Count $state.Status
+    Set-SjcGuiPanel $app 'Files' $false;Set-SjcGuiPanel $app 'Files' $true
+    Assert-True 'opening file details does not invalidate scan' ($null -ne $state.Scan -and -not $state.Stale)
+    Assert-Equal 'opening file details preserves candidate page' 200 $state.PageItems.Count
     Start-SjcGuiLocalJob $app 'Page' @{Offset=400};Wait-PreviewJob $app
     Assert-Equal 'background reaches final page' 50 $state.PageItems.Count $state.Status
     Assert-Equal 'page offset matches' 400 $state.PageOffset

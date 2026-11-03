@@ -3,8 +3,8 @@ function Assert-SjcWorkerPayload {
     param($Payload,[string]$Mode)
     if ($null -eq $Payload -or $Payload -isnot [pscustomobject]) { throw '任务载荷必须是JSON对象。' }
     $allowed=@('TaskDirectory','CancelPath','ProgressPath')
-    if ($Mode -eq 'Scan') { $allowed += @('RuleIds','CleaningProfile') }
-    if ($Mode -eq 'Clean') { $allowed += @('ExcludedIds','RecycleMode','CleaningProfile') }
+    if ($Mode -eq 'Scan') { $allowed += @('RuleIds','CleaningProfile','CustomEnabled') }
+    if ($Mode -eq 'Clean') { $allowed += @('ExcludedIds','RecycleMode','CleaningProfile','CustomEnabled') }
     foreach($property in $Payload.PSObject.Properties.Name) {
         if ($property -notin $allowed) { throw ('未知或不允许的载荷字段：' + $property) }
     }
@@ -14,6 +14,7 @@ function Assert-SjcWorkerPayload {
     if ($Mode -in @('Scan','Clean')) {
         if (-not $Payload.PSObject.Properties['CleaningProfile']) { throw '缺少 CleaningProfile，拒绝旧任务载荷。' }
         Assert-SjcCleaningProfile $Payload.CleaningProfile
+        if (-not $Payload.PSObject.Properties['CustomEnabled'] -or $Payload.CustomEnabled -isnot [bool]) { throw 'CustomEnabled 必须是显式布尔值，拒绝旧任务载荷。' }
     }
     if ($Mode -eq 'Scan') { Assert-SjcStringArray $Payload.RuleIds 'RuleIds' 10000 }
     if ($Mode -eq 'Clean') {
@@ -94,14 +95,18 @@ function Invoke-SjcWorker {
             $workerLease=Open-SjcTaskLease $task 'worker.active'
             $payload=Read-SjcSafeText $payloadFile | ConvertFrom-Json -ErrorAction Stop
             Assert-SjcWorkerPayload $payload $Mode
-            if ($Mode -in @('Scan','Clean')) { Set-SjcCleaningProfile -Context $context -CleaningProfile $payload.CleaningProfile }
+            if ($Mode -in @('Scan','Clean')) {
+                Set-SjcCleaningProfile -Context $context -CleaningProfile $payload.CleaningProfile
+                # Re-discover from this process's trusted sources and the private authorization store, never payload roots.
+                [void](Refresh-SjcAuthorizedRules -Context $context)
+            }
             if ((Get-SjcFullPath $payload.TaskDirectory) -cne $task) { throw '载荷任务目录与已验证通道目录不一致。' }
             $cancel=Assert-SjcChannel $task $payload.CancelPath -Optional
             $progress=Assert-SjcChannel $task $payload.ProgressPath -Optional
             Assert-SjcDistinctChannels @($payloadFile,$output,$cancel,$progress)
             switch ($Mode) {
-                'Scan' { $result=Invoke-SjcScan -Context $context -TaskDirectory $task -RuleIds @($payload.RuleIds) -CancelPath $cancel -ProgressPath $progress }
-                'Clean' { $result=Invoke-SjcClean -Context $context -TaskDirectory $task -ExcludedIds @($payload.ExcludedIds) -RecycleMode $payload.RecycleMode -CancelPath $cancel -ProgressPath $progress }
+                'Scan' { $result=Invoke-SjcScan -Context $context -TaskDirectory $task -RuleIds @($payload.RuleIds) -CancelPath $cancel -ProgressPath $progress -CustomEnabled $payload.CustomEnabled }
+                'Clean' { $result=Invoke-SjcClean -Context $context -TaskDirectory $task -ExcludedIds @($payload.ExcludedIds) -RecycleMode $payload.RecycleMode -CancelPath $cancel -ProgressPath $progress -CustomEnabled $payload.CustomEnabled }
                 'Recycle' { $result=Invoke-SjcRecycle -Context $context }
                 'SelfTest' { $result=Invoke-SjcSelfTest }
             }

@@ -28,13 +28,24 @@ try {
 
     $originalRules = ${function:Get-SjcRules}
     $script:ruleOverrideApplied = $false
+    # Rule doubles are built through the product constructor so every v0.12 seal field
+    # (AgePolicy, ProcessPolicy, authorization/discovery bindings) is present; only the
+    # id/root/patterns differ, making the overlap/dedupe verdict meaningful.
+    function New-S02RuleDouble {
+        param([string]$Id, [string]$TemplateId, [string]$Root)
+        $rule = New-SjcRule -Id $Id -TemplateId $TemplateId -Name ($Id + '-double') -Group 'test' -Root $Root -Patterns @('*.tmp', '*') -MinimumAgeHours 24 -Recommended ($Id -eq 'SandboxOld')
+        $rule.PresetLevel = 'Low'; $rule.CleaningProfile = 'Medium'
+        $rule.LowMinimumAgeHours = 24; $rule.MediumMinimumAgeHours = 24; $rule.HighMinimumAgeHours = 24
+        $rule.MinimumAgeHours = 24; $rule.RecommendedMinimumAgeHours = 24; $rule.DeepMinimumAgeHours = 24
+        return $rule
+    }
     function Get-SjcRules {
         param($Context)
         if ($script:ruleOverrideApplied) {
             $root = Join-Path $script:s02Sandbox 'files'
             @(
-                [pscustomobject]@{ Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = 'overlap-owner'; Group = 'test'; Risk = '低'; Recommended = $true; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'; OverrideEnvironment = @(); RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
-                [pscustomobject]@{ Id = 'SandboxLog'; TemplateId = 'SandboxLog'; Name = 'overlap-second'; Group = 'test'; Risk = '低'; Recommended = $false; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'; OverrideEnvironment = @(); RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
+                (New-S02RuleDouble -Id 'SandboxOld' -TemplateId 'SandboxOld' -Root $root)
+                (New-S02RuleDouble -Id 'SandboxLog' -TemplateId 'SandboxLog' -Root $root)
             )
             return
         }
@@ -45,7 +56,7 @@ try {
     $script:ruleOverrideApplied = $true
 
     $task = New-SjcTaskDirectory -Context $context
-    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task
+    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -CustomEnabled $true
     $script:ruleOverrideApplied = $false
     [void](Save-Evidence 'overlap-scan' $scan)
 
