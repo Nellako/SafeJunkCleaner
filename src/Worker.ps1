@@ -3,13 +3,17 @@ function Assert-SjcWorkerPayload {
     param($Payload,[string]$Mode)
     if ($null -eq $Payload -or $Payload -isnot [pscustomobject]) { throw '任务载荷必须是JSON对象。' }
     $allowed=@('TaskDirectory','CancelPath','ProgressPath')
-    if ($Mode -eq 'Scan') { $allowed += 'RuleIds' }
-    if ($Mode -eq 'Clean') { $allowed += @('ExcludedIds','RecycleMode') }
+    if ($Mode -eq 'Scan') { $allowed += @('RuleIds','CleaningProfile') }
+    if ($Mode -eq 'Clean') { $allowed += @('ExcludedIds','RecycleMode','CleaningProfile') }
     foreach($property in $Payload.PSObject.Properties.Name) {
         if ($property -notin $allowed) { throw ('未知或不允许的载荷字段：' + $property) }
     }
     foreach($field in @('TaskDirectory','CancelPath','ProgressPath')) {
         if (-not $Payload.PSObject.Properties[$field] -or $Payload.$field -isnot [string]) { throw ($field + ' 必须是字符串。') }
+    }
+    if ($Mode -in @('Scan','Clean')) {
+        if (-not $Payload.PSObject.Properties['CleaningProfile']) { throw '缺少 CleaningProfile，拒绝旧任务载荷。' }
+        Assert-SjcCleaningProfile $Payload.CleaningProfile
     }
     if ($Mode -eq 'Scan') { Assert-SjcStringArray $Payload.RuleIds 'RuleIds' 10000 }
     if ($Mode -eq 'Clean') {
@@ -90,6 +94,7 @@ function Invoke-SjcWorker {
             $workerLease=Open-SjcTaskLease $task 'worker.active'
             $payload=Read-SjcSafeText $payloadFile | ConvertFrom-Json -ErrorAction Stop
             Assert-SjcWorkerPayload $payload $Mode
+            if ($Mode -in @('Scan','Clean')) { Set-SjcCleaningProfile -Context $context -CleaningProfile $payload.CleaningProfile }
             if ((Get-SjcFullPath $payload.TaskDirectory) -cne $task) { throw '载荷任务目录与已验证通道目录不一致。' }
             $cancel=Assert-SjcChannel $task $payload.CancelPath -Optional
             $progress=Assert-SjcChannel $task $payload.ProgressPath -Optional

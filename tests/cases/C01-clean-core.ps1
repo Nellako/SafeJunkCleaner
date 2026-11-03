@@ -39,7 +39,8 @@ try {
 
     # A read-only candidate is skipped and counted as an error, so the run is Partial.
     Assert-Equal 'clean status is Partial because the read-only candidate was skipped' 'Partial' $clean.Status $clean.Error
-    Assert-Equal 'clean reports version 0.9.0' '0.9.0' ([string]$clean.Version)
+    # Version is owned by version.json; the case asserts the product single source, not a frozen literal.
+    Assert-Equal 'clean reports the version.json product version' (Get-SjcVersion) ([string]$clean.Version)
     Assert-Equal 'clean TaskId equals task GUID' ([IO.Path]::GetFileName($task)) ([string]$clean.TaskId)
     Assert-Equal 'exactly two sealed files deleted' 2 ([int64]$clean.Deleted)
     Assert-Equal 'processed bytes are the sum of deleted logical lengths' 768 ([int64]$clean.ProcessedBytes)

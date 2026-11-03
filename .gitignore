@@ -1,6 +1,7 @@
 # Local tools and private working records
 .zcode/
 .workbuddy/
+/handoffs/
 NN_*/
 
 # Generated builds, distribution packages and detailed test evidence

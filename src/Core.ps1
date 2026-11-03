@@ -153,19 +153,41 @@ function Get-SjcContextConfiguration {
     foreach ($entry in (Get-SjcRegistry)) {
         if ([object]::ReferenceEquals($entry.Context,$Context)) {
             if ($entry.IsTest) { Assert-SjcSandbox $entry.TestRoot }
+            if ($Context.CleaningProfile -cne $entry.CleaningProfile) { throw '上下文档位被直接修改，请使用 Set-SjcCleaningProfile。' }
             return $entry
         }
     }
     throw '上下文不是本实现创建的可信上下文。'
 }
+function Assert-SjcCleaningProfile {
+    param($CleaningProfile)
+    if ($CleaningProfile -isnot [string] -or $CleaningProfile -cnotin @('Recommended','Deep')) { throw 'CleaningProfile 必须为 Recommended 或 Deep（区分大小写）。' }
+}
+function Set-SjcCleaningProfile {
+    param([Parameter(Mandatory=$true)]$Context,[Parameter(Mandatory=$true)]$CleaningProfile)
+    Assert-SjcCleaningProfile $CleaningProfile
+    $configuration=Get-SjcContextConfiguration $Context
+    if ($configuration.CleaningProfile -ceq $CleaningProfile) { return }
+    # Deny old plans even after switching back. Marker is denial-only, never approval.
+    foreach($task in $configuration.TaskDirectories) {
+        if ([IO.File]::Exists((Join-Path $task 'scan.meta.json'))) {
+            [void](Assert-SjcTaskDirectory $Context $task)
+            Write-SjcAtomicText -Path (Join-Path $task 'profile.invalidated') -Text 'Cleaning profile changed; rescan required.'
+        }
+    }
+    $configuration.CleaningProfile=$CleaningProfile; $configuration.ProfileEpoch++
+    $Context.CleaningProfile=$CleaningProfile
+    $Context.Rules=@(Get-SjcRules $Context)
+}
 function New-SjcContext {
-    param([string]$TestRoot)
+    param([string]$TestRoot,$CleaningProfile='Recommended')
+    Assert-SjcCleaningProfile $CleaningProfile
     $isTest = -not [string]::IsNullOrWhiteSpace($TestRoot)
     if ($isTest) { $TestRoot=Get-SjcFullPath $TestRoot; Assert-SjcSandbox $TestRoot; $state = Join-Path $TestRoot 'state' }
     else { $state = Get-SjcProductionStateRoot }
     Set-SjcPrivateDirectory $state
-    $context = [pscustomobject]@{ Version=(Get-SjcVersion); StateRoot=$state; Rules=@() }
-    $configuration = [pscustomobject]@{ Context=$context; StateRoot=$state; IsTest=$isTest; TestRoot=$TestRoot }
+    $context = [pscustomobject]@{ Version=(Get-SjcVersion); StateRoot=$state; Rules=@(); CleaningProfile=$CleaningProfile }
+    $configuration = [pscustomobject]@{ Context=$context; StateRoot=$state; IsTest=$isTest; TestRoot=$TestRoot; CleaningProfile=$CleaningProfile; ProfileEpoch=0; TaskDirectories=(New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)) }
     [void](Get-SjcRegistry).Add($configuration)
     $context.Rules = @(Get-SjcRules -Context $context)
     return $context
@@ -199,6 +221,7 @@ function New-SjcTaskDirectory {
     Set-SjcPrivateDirectory $path
     $owner=[ordered]@{ Version=(Get-SjcVersion); SchemaVersion=(Get-SjcPlanSchemaVersion); TaskId=$id; Path=$path; StateRoot=$configuration.StateRoot; IsTest=$configuration.IsTest; Nonce=[guid]::NewGuid().ToString('N') }
     Write-SjcAtomicText -Path (Join-Path $path '.task-owner') -Text (Protect-SjcText ($owner | ConvertTo-Json -Compress)) -NoOverwrite
+    [void]$configuration.TaskDirectories.Add($path)
     return $path
 }
 function Assert-SjcTaskDirectory {
@@ -245,14 +268,16 @@ function Read-SjcPreferences {
     if (-not [IO.File]::Exists($path)) { return $null }
     $value=Read-SjcSafeText $path | ConvertFrom-Json -ErrorAction Stop
     Assert-SjcPreferences $Context $value
-    return [pscustomobject]@{ RecycleMode=$value.RecycleMode; SelectedRuleIds=@($value.SelectedRuleIds) }
+    $profile=if($value.PSObject.Properties['CleaningProfile']){$value.CleaningProfile}else{'Recommended'}
+    return [pscustomobject]@{ RecycleMode=$value.RecycleMode; SelectedRuleIds=@($value.SelectedRuleIds); CleaningProfile=$profile }
 }
 function Assert-SjcPreferences {
     param($Context,$Preferences)
     if ($null -eq $Preferences -or $Preferences.RecycleMode -isnot [bool]) { throw 'RecycleMode 必须为布尔值。' }
     Assert-SjcStringArray $Preferences.SelectedRuleIds 'SelectedRuleIds' 10000
     $properties=@($Preferences.PSObject.Properties.Name)
-    if (@($properties | Where-Object { $_ -notin @('RecycleMode','SelectedRuleIds') }).Count -gt 0) { throw '首选项包含未知字段。' }
+    if (@($properties | Where-Object { $_ -notin @('RecycleMode','SelectedRuleIds','CleaningProfile') }).Count -gt 0) { throw '首选项包含未知字段。' }
+    if ($Preferences.PSObject.Properties['CleaningProfile']) { Assert-SjcCleaningProfile $Preferences.CleaningProfile }
     $known=@{}; foreach($rule in @(Get-SjcRules $Context)) { $known[$rule.Id]=$true }
     $seen=@{}
     foreach($id in $Preferences.SelectedRuleIds) { if (-not $known.ContainsKey($id) -or $seen.ContainsKey($id)) { throw '首选项包含未知或重复规则。' }; $seen[$id]=$true }
@@ -266,7 +291,7 @@ function Save-SjcPreferences {
 }
 function Get-SjcRuleSeal {
     param($Rule)
-    return ([pscustomobject][ordered]@{ Id=$Rule.Id; TemplateId=$Rule.TemplateId; Root=(Get-SjcFullPath $Rule.Root); Patterns=@($Rule.Patterns); ExcludePatterns=@($Rule.ExcludePatterns); MinimumAgeHours=$Rule.MinimumAgeHours; RequiresClosedProcess=@($Rule.RequiresClosedProcess) } | ConvertTo-Json -Depth 5 -Compress)
+    return ([pscustomobject][ordered]@{ Id=$Rule.Id; TemplateId=$Rule.TemplateId; Root=(Get-SjcFullPath $Rule.Root); Patterns=@($Rule.Patterns); ExcludePatterns=@($Rule.ExcludePatterns); CleaningProfile=$Rule.CleaningProfile; RecommendedMinimumAgeHours=$Rule.RecommendedMinimumAgeHours; DeepMinimumAgeHours=$Rule.DeepMinimumAgeHours; MinimumAgeHours=$Rule.MinimumAgeHours; RequiresClosedProcess=@($Rule.RequiresClosedProcess); OverrideEnvironment=@($Rule.OverrideEnvironment) } | ConvertTo-Json -Depth 5 -Compress)
 }
 function Get-SjcSelectedRules {
     param($Context,[string[]]$RuleIds)
@@ -277,6 +302,15 @@ function Get-SjcSelectedRules {
         if (-not $rules.ContainsKey($id) -or $seen.ContainsKey($id)) { throw ('未知或重复规则：' + $id) }
         $seen[$id]=$true; $rules[$id]
     }
+}
+function Test-SjcRuleConfiguration {
+    param($Rule)
+    if ($Rule.PSObject.Properties['OverrideEnvironment']) {
+        foreach($name in $Rule.OverrideEnvironment) {
+            if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) { return $false }
+        }
+    }
+    return $true
 }
 function Test-SjcProcessesClosed {
     param($Rule)
@@ -350,7 +384,7 @@ function Get-SjcStreamHash {
 
 function Invoke-SjcScan {
     param([Parameter(Mandatory=$true)]$Context,[string[]]$RuleIds,[string]$TaskDirectory,[string]$CancelPath,[string]$ProgressPath)
-    $result=[pscustomobject][ordered]@{ Version=(Get-SjcVersion); TaskId=''; Status='Failed'; Categories=@(); CandidateCount=[int64]0; CandidateBytes=[int64]0; PlanPath=''; LogPath=''; WarningCount=0; Warnings=(New-Object 'System.Collections.Generic.List[string]'); Error='' }
+    $result=[pscustomobject][ordered]@{ Version=(Get-SjcVersion); CleaningProfile=(Get-SjcContextConfiguration $Context).CleaningProfile; TaskId=''; Status='Failed'; Categories=@(); CandidateCount=[int64]0; CandidateBytes=[int64]0; PlanPath=''; LogPath=''; WarningCount=0; Warnings=(New-Object 'System.Collections.Generic.List[string]'); Error='' }
     $writer=$null; $stream=$null; $lease=$null
     try {
         $result.LogPath=New-SjcOperationLog $Context 'scan'
@@ -362,7 +396,7 @@ function Invoke-SjcScan {
         $rules=@(Get-SjcSelectedRules $Context $RuleIds)
         $categories=New-Object 'System.Collections.Generic.List[object]'; $groups=@{}
         foreach($rule in $rules) {
-            $cat=[pscustomobject]@{RuleId=$rule.Id; Name=$rule.Name; Group=$rule.Group; Risk=$rule.Risk; Root=$rule.Root; Count=[int64]0; Bytes=[int64]0; Status='Pending'; Note=$rule.Note}
+            $cat=[pscustomobject]@{RuleId=$rule.Id; Name=$rule.Name; Group=$rule.Group; Risk=$rule.Risk; Root=$rule.Root; CleaningProfile=$rule.CleaningProfile; MinimumAgeHours=$rule.MinimumAgeHours; Count=[int64]0; Bytes=[int64]0; Status='Pending'; Note=$rule.Note}
             [void]$categories.Add($cat)
             try {
                 if (-not (Test-SjcNoReparsePath $rule.Root -AllowMissing)) { throw '规则根或任一祖先不安全/无权限。' }
@@ -372,6 +406,7 @@ function Invoke-SjcScan {
                     catch [IO.DirectoryNotFoundException] { $cat.Status='Missing'; continue }
                     catch [IO.FileNotFoundException] { $cat.Status='Missing'; continue }
                 }
+                if (-not (Test-SjcRuleConfiguration $rule)) { $cat.Status='UnsupportedConfiguration'; $cat.Note='检测到缓存覆盖配置变量，未读取或采用自定义路径；本次未扫描。'; continue }
                 if (-not (Test-SjcProcessesClosed $rule)) { $cat.Status='RunningProcess'; $cat.Note='要求相关应用全部关闭；本次未扫描。'; continue }
                 $cat.Status='Success'; $root=Get-SjcFullPath $rule.Root
                 if (-not $groups.ContainsKey($root)) { $groups[$root]=New-Object 'System.Collections.Generic.List[object]' }
@@ -385,6 +420,8 @@ function Invoke-SjcScan {
         $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         $clock=[Diagnostics.Stopwatch]::StartNew(); $cancelled=$false; $now=[datetime]::UtcNow
         foreach($root in @($groups.Keys | Sort-Object)) {
+            # Immutable operation-local rule grouping; no cached filesystem/process verdicts.
+            $rootPairs=$groups[$root].ToArray()
             $queue=New-Object 'System.Collections.Generic.Queue[string]'; $queue.Enqueue($root)
             while($queue.Count -gt 0) {
                 if (Test-SjcCancelled $cancel) { $cancelled=$true; break }
@@ -400,7 +437,7 @@ function Invoke-SjcScan {
                             if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw '跳过重解析条目。' }
                             if ($entry -is [IO.DirectoryInfo]) { $queue.Enqueue($path); continue }
                             if ($entry -isnot [IO.FileInfo]) { continue }
-                            foreach($pair in $groups[$root]) {
+                            foreach($pair in $rootPairs) {
                                 if (-not (Test-SjcRuleFile $pair.Rule $entry $now)) { continue }
                                 if ($seen.Contains($path)) { break }
                                 if (-not (Test-SjcNoReparsePath $path)) { throw '候选全祖先检查失败。' }
@@ -415,25 +452,25 @@ function Invoke-SjcScan {
                             }
                         } catch {
                             Add-SjcWarning $result ($entry.FullName + ': ' + $_.Exception.Message)
-                            foreach($pair in $groups[$root]) { $pair.Category.Status='Partial' }
+                            foreach($pair in $rootPairs) { $pair.Category.Status='Partial' }
                         }
                         Write-SjcProgress $progress '正在扫描候选（未删除文件）' 0 $result.CandidateCount $clock
                     }
                 } catch {
                     Add-SjcWarning $result ($folder + ': ' + $_.Exception.Message)
-                    foreach($pair in $groups[$root]) { $pair.Category.Status='Partial' }
+                    foreach($pair in $rootPairs) { $pair.Category.Status='Partial' }
                 }
                 if ($cancelled) { break }
             }
             if ($cancelled) { break }
         }
         if ($cancelled) { $result.Status='Cancelled'; foreach($cat in $categories) { if ($cat.Status -in @('Success','Pending')) { $cat.Status='Cancelled' } } }
-        elseif (@($categories | Where-Object { $_.Status -in @('Partial','Failed','RunningProcess') }).Count -gt 0) { $result.Status='Partial' }
+        elseif (@($categories | Where-Object { $_.Status -in @('Partial','Failed','RunningProcess','UnsupportedConfiguration') }).Count -gt 0) { $result.Status='Partial' }
         else { $result.Status='Success' }
         $writer.Flush(); $stream.Flush($true)
         $hash=Get-SjcStreamHash $stream
         $configuration=Get-SjcContextConfiguration $Context
-        $meta=[ordered]@{ Version=(Get-SjcVersion); SchemaVersion=(Get-SjcPlanSchemaVersion); TaskId=$result.TaskId; TaskDirectory=$task; IsTest=$configuration.IsTest; Status=$result.Status; CreatedUtc=[datetime]::UtcNow.ToString('o'); PlanFile='candidates.jsonl'; PlanHash=$hash; PlanLength=$stream.Length; CandidateCount=$result.CandidateCount; CandidateBytes=$result.CandidateBytes; Rules=@($rules | ForEach-Object { Get-SjcRuleSeal $_ }) }
+        $meta=[ordered]@{ Version=(Get-SjcVersion); PolicyRevision=1; CleaningProfile=$configuration.CleaningProfile; ProfileEpoch=$configuration.ProfileEpoch; SchemaVersion=(Get-SjcPlanSchemaVersion); TaskId=$result.TaskId; TaskDirectory=$task; IsTest=$configuration.IsTest; Status=$result.Status; CreatedUtc=[datetime]::UtcNow.ToString('o'); PlanFile='candidates.jsonl'; PlanHash=$hash; PlanLength=$stream.Length; CandidateCount=$result.CandidateCount; CandidateBytes=$result.CandidateBytes; Rules=@($rules | ForEach-Object { Get-SjcRuleSeal $_ }) }
         Write-SjcAtomicText -Path (Join-Path $task 'scan.meta.json') -Text (Protect-SjcText ($meta | ConvertTo-Json -Depth 8 -Compress)) -NoOverwrite
         $result.PlanPath=$plan
         Write-SjcProgress $progress '扫描结束' 0 $result.CandidateCount $clock -Force
@@ -448,12 +485,24 @@ function Get-SjcPlanContext {
     param([string]$TaskDirectory)
     $task=Get-SjcFullPath $TaskDirectory
     foreach($configuration in (Get-SjcRegistry)) {
-        if (Test-SjcPathWithin $task (Join-Path $configuration.StateRoot 'Tasks')) { return $configuration.Context }
+        if ((Test-SjcPathWithin $task (Join-Path $configuration.StateRoot 'Tasks')) -and ($configuration.IsTest -or $configuration.TaskDirectories.Contains($task))) { return $configuration.Context }
     }
     # GUI page/export may occur in a fresh process, but only production-owned tasks survive it.
     $context=New-SjcContext
     [void](Assert-SjcTaskDirectory $context $task)
+    # Read-only preview/export adopts only the authenticated plan's enum, never roots.
+    $metadata=Unprotect-SjcText (Read-SjcSafeText (Join-Path $task 'scan.meta.json')) | ConvertFrom-Json -ErrorAction Stop
+    if (-not $metadata.PSObject.Properties['CleaningProfile']) { throw '旧计划缺少档位，请重新扫描。' }
+    Set-SjcCleaningProfile -Context $context -CleaningProfile $metadata.CleaningProfile
     return $context
+}
+function Assert-SjcPlanProfile {
+    param($Context,$Metadata,[string]$TaskDirectory)
+    $configuration=Get-SjcContextConfiguration $Context
+    if (-not $Metadata.PSObject.Properties['CleaningProfile'] -or -not $Metadata.PSObject.Properties['PolicyRevision'] -or $Metadata.PolicyRevision -ne 1) { throw '旧计划缺少档位封存，请重新扫描。' }
+    Assert-SjcCleaningProfile $Metadata.CleaningProfile
+    if ($Metadata.CleaningProfile -cne $configuration.CleaningProfile -or [IO.File]::Exists((Join-Path $TaskDirectory 'profile.invalidated')) -or [IO.Directory]::Exists((Join-Path $TaskDirectory 'profile.invalidated'))) { throw '清理档位已变化，旧计划失效，请重新扫描。' }
+    [void]$configuration.TaskDirectories.Add($TaskDirectory)
 }
 function Open-SjcPlan {
     param($Context,[string]$TaskDirectory)
@@ -462,6 +511,7 @@ function Open-SjcPlan {
     $meta=Unprotect-SjcText (Read-SjcSafeText $metaPath) | ConvertFrom-Json -ErrorAction Stop
     $configuration=Get-SjcContextConfiguration $Context
     if ($meta.Version -cne (Get-SjcVersion) -or -not $meta.PSObject.Properties['SchemaVersion'] -or $meta.SchemaVersion -ne (Get-SjcPlanSchemaVersion) -or $meta.TaskId -cne [IO.Path]::GetFileName($task) -or $meta.TaskDirectory -cne $task -or $meta.IsTest -isnot [bool] -or $meta.IsTest -ne $configuration.IsTest -or $meta.PlanFile -cne 'candidates.jsonl' -or $meta.Status -notin @('Success','Partial','Cancelled')) { throw '扫描封存元信息不匹配。' }
+    Assert-SjcPlanProfile $Context $meta $task
     if (-not (Test-SjcNoReparsePath $path)) { throw '计划文件不安全。' }
     [void](Get-SjcFileIdentity $path)
     $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
@@ -527,7 +577,7 @@ function Open-SjcPreviewSession {
         }
         if ($start -lt $position) { [void]$offsets.Add($start) }
         if ($offsets.Count -ne $count) { throw '分页位置与完整候选计数不符。' }
-        $session=[pscustomobject]@{Id=[guid]::NewGuid().ToString('N');PlanPath=$path;Count=$count;Bytes=$bytes;Closed=$false;Stream=$plan.Stream;Offsets=$offsets.ToArray();ByRule=$byRule;Gate=(New-Object object)}
+        $session=[pscustomobject]@{Id=[guid]::NewGuid().ToString('N');Context=$context;ProfileEpoch=(Get-SjcContextConfiguration $context).ProfileEpoch;PlanPath=$path;Count=$count;Bytes=$bytes;Closed=$false;Stream=$plan.Stream;Offsets=$offsets.ToArray();ByRule=$byRule;Gate=(New-Object object)}
         if (-not (Get-Variable -Scope Script -Name SjcPreviewSessions -ErrorAction SilentlyContinue)) { $script:SjcPreviewSessions=@{} }
         $script:SjcPreviewSessions[$session.Id]=$session
         return $session
@@ -544,6 +594,7 @@ function Get-SjcPreviewPage {
     [Threading.Monitor]::Enter($Session.Gate)
     try {
         Assert-SjcPreviewSession $Session
+        if ($Session.ProfileEpoch -ne (Get-SjcContextConfiguration $Session.Context).ProfileEpoch) { throw '档位已变化，请重新扫描并打开预览。' }
         if ($Offset -ge $Session.Count) { return @() }
         $Session.Stream.Position=$Session.Offsets[$Offset]
         $reader=[IO.StreamReader]::new($Session.Stream,[Text.UTF8Encoding]::new($false,$true),$false,8192,$true)
@@ -559,6 +610,7 @@ function Get-SjcPreviewPage {
 function Get-SjcPreviewRuleCandidates {
     param($Session,[string]$RuleId)
     Assert-SjcPreviewSession $Session
+    if ($Session.ProfileEpoch -ne (Get-SjcContextConfiguration $Session.Context).ProfileEpoch) { throw '档位已变化，请重新扫描并打开预览。' }
     if ($Session.ByRule.ContainsKey($RuleId)) { return $Session.ByRule[$RuleId].ToArray() }
     return @()
 }
@@ -632,7 +684,7 @@ function Export-SjcCandidates {
 
 function Invoke-SjcClean {
     param([Parameter(Mandatory=$true)]$Context,[string]$TaskDirectory,[string[]]$ExcludedIds=@(),[bool]$RecycleMode=$true,[string]$CancelPath,[string]$ProgressPath)
-    $result=[pscustomobject][ordered]@{ Version=(Get-SjcVersion); TaskId=''; Status='Failed'; Reviewed=[int64]0; Deleted=[int64]0; ProcessedBytes=[int64]0; Skipped=[int64]0; Errors=(New-Object 'System.Collections.Generic.List[string]'); ErrorCount=0; LogPath=''; Error='' }
+    $result=[pscustomobject][ordered]@{ Version=(Get-SjcVersion); CleaningProfile=(Get-SjcContextConfiguration $Context).CleaningProfile; TaskId=''; Status='Failed'; Reviewed=[int64]0; Deleted=[int64]0; ProcessedBytes=[int64]0; Skipped=[int64]0; Errors=(New-Object 'System.Collections.Generic.List[string]'); ErrorCount=0; LogPath=''; Error='' }
     $plan=$null; $reader=$null; $claim=$null; $lease=$null
     try {
         $result.LogPath=New-SjcOperationLog $Context 'clean'
@@ -643,6 +695,10 @@ function Invoke-SjcClean {
         $plan=Open-SjcPlan $Context $task
         if ($plan.Metadata.Status -eq 'Cancelled') { throw '取消的扫描不能清理，请重扫。' }
         $rules=Get-SjcPlanRuleMap $Context $plan.Metadata
+        # Only immutable variable NAMES from freshly approved rules are prepared.
+        # Never cache environment values or configuration/process safety verdicts.
+        $configurationVariables=@{}
+        foreach($approvedRule in $rules.Values) { $configurationVariables[$approvedRule.Id]=[string[]]@($approvedRule.OverrideEnvironment) }
         $excluded=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         foreach($id in $ExcludedIds) { if (-not $excluded.Add($id)) { throw '排除ID重复。' } }
         $ids=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -671,6 +727,9 @@ function Invoke-SjcClean {
             try {
                 $rule=$rules[$candidate.RuleId]; $path=$candidate.Path
                 if (-not (Test-SjcNoReparsePath $path)) { throw '文件或全祖先检查失败。' }
+                foreach($variableName in $configurationVariables[$rule.Id]) {
+                    if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($variableName))) { throw '缓存覆盖配置已变化或不受支持，请保留文件。' }
+                }
                 if (-not (Test-SjcProcessesClosed $rule)) { throw '规则要求的应用仍在运行。' }
                 $file=[IO.FileInfo]::new($path); $file.Refresh()
                 if (-not $file.Exists -or -not (Test-SjcRuleFile $rule $file ([datetime]::UtcNow))) { throw '文件不存在、模式或保留年龄不符合规则。' }

@@ -60,12 +60,18 @@ try {
         Assert-True ('rule seal is deterministic for ' + $rule.Id) ($seal -ceq (Get-SjcRuleSeal $rule)) $seal
     }
     $sealObj = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
-    Assert-Equal 'seal covers identity fields only' 'ExcludePatterns,Id,MinimumAgeHours,Patterns,RequiresClosedProcess,Root,TemplateId' (@($sealObj.PSObject.Properties.Name | Sort-Object) -join ',')
+    # New contract: the seal also pins the profile, both profile ages and the
+    # environment-override denylist, so a profile/age/override change invalidates approval.
+    Assert-Equal 'seal covers identity, profile, both ages and override fields' 'CleaningProfile,DeepMinimumAgeHours,ExcludePatterns,Id,MinimumAgeHours,OverrideEnvironment,Patterns,RecommendedMinimumAgeHours,RequiresClosedProcess,Root,TemplateId' (@($sealObj.PSObject.Properties.Name | Sort-Object) -join ',')
     Assert-True 'seal includes root, patterns, age and process requirements' ($sealObj.Root -and $sealObj.Patterns -and $sealObj.MinimumAgeHours -and $null -ne $sealObj.RequiresClosedProcess) ''
+    Assert-True 'seal includes the profile and both profile ages' ($sealObj.CleaningProfile -in @('Recommended','Deep') -and $sealObj.RecommendedMinimumAgeHours -gt 0 -and $sealObj.DeepMinimumAgeHours -gt 0) ([string]$sealObj.CleaningProfile + '; rec=' + [string]$sealObj.RecommendedMinimumAgeHours + '; deep=' + [string]$sealObj.DeepMinimumAgeHours)
 
     $changed = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
     $changed.MinimumAgeHours = 1
     Assert-True 'changed age produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($changed | ConvertTo-Json -Depth 5 -Compress)) ''
+    $profileChanged = (Get-SjcRuleSeal $currentRules[0]) | ConvertFrom-Json
+    $profileChanged.CleaningProfile = 'Deep'
+    Assert-True 'changed profile produces a different seal (approval would fail)' ((Get-SjcRuleSeal $currentRules[0]) -cne ($profileChanged | ConvertTo-Json -Depth 5 -Compress)) ''
 
     # Clean must read the sealed plan, not re-enumerate the sandbox.
     $clean = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false

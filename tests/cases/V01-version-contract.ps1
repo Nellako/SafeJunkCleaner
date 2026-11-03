@@ -3,8 +3,12 @@ param([Parameter(Mandatory=$true)][string]$RepoRoot,[Parameter(Mandatory=$true)]
 . (Join-Path $RepoRoot 'tests\lib\Harness.ps1') -RepoRoot $RepoRoot -CaseId $CaseId -ResultPath $ResultPath -EvidenceDirectory $EvidenceDirectory
 try{
     $version=Get-SjcVersionInfo
-    Assert-Equal 'public version' '0.9.0' $version.version
-    Assert-Equal 'Windows file version' '0.9.0.0' $version.fileVersion
+    # The product version is owned by version.json. Assert the declared contract and
+    # internal consistency instead of a frozen literal, so a version bump is not
+    # itself a regression. Old-task/old-plan refusal assertions below are unchanged.
+    Assert-True 'public version is three numeric components' ([string]$version.version -match '^\d+\.\d+\.\d+$') ([string]$version.version)
+    Assert-Equal 'Windows file version derives from the public version' (([string]$version.version) + '.0') $version.fileVersion
+    Assert-Equal 'result version equals the metadata version' ([string]$version.version) (Get-SjcVersion)
     Assert-Equal 'schema independent from display version' 1 (Get-SjcPlanSchemaVersion)
     $sandbox=New-OwnedSandbox;$context=$sandbox.Context
     $target=Join-Path $sandbox.Root 'files\version.tmp';New-TestFile -Path $target -Bytes 8 -AgeHours 100|Out-Null

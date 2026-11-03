@@ -57,22 +57,41 @@ function Invoke-ReleaseProcess {
     $safeTag = ($Tag -replace '[^A-Za-z0-9._-]', '_')
     $stdout = Join-Path $script:EvidenceDirectory ($safeTag + '.stdout.log')
     $stderr = Join-Path $script:EvidenceDirectory ($safeTag + '.stderr.log')
+    # Diagnostics.Process gives a trustworthy ExitCode (Start-Process -PassThru can leave
+    # ExitCode null for redirected children) and preserves non-ASCII arguments verbatim
+    # because they are passed as a single argument string, not re-quoted by the shell.
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $timedOut = $false
     $redirected = $true
     try {
-        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $process.Start()) { throw ('Cannot start child: ' + $Tag) }
+        $null = $process.Handle
+        $stdoutRead = $process.StandardOutput.ReadToEndAsync()
+        $stderrRead = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $timedOut = $true
+            try { $process.Kill() } catch { }
+            [void]$process.WaitForExit(10000)
+        }
+        $exitCode = if ($process.HasExited) { [int]$process.ExitCode } else { $null }
+        if ($process.HasExited) {
+            [IO.File]::WriteAllText($stdout, $stdoutRead.GetAwaiter().GetResult(), (New-Object Text.UTF8Encoding($true)))
+            [IO.File]::WriteAllText($stderr, $stderrRead.GetAwaiter().GetResult(), (New-Object Text.UTF8Encoding($true)))
+        }
     }
     catch {
         $redirected = $false
-        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru -WindowStyle Hidden
+        $exitCode = $null
     }
-    $timedOut = $false
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        $timedOut = $true
-        try { $process.Kill() } catch { }
-        [void]$process.WaitForExit(10000)
-    }
-    try { $process.Refresh() } catch { }
-    $exitCode = if ($process.HasExited) { [int]$process.ExitCode } else { $null }
+    finally { $process.Dispose() }
     return [pscustomobject]@{
         Tag = $Tag
         FilePath = $FilePath
@@ -308,7 +327,7 @@ function Assert-ReleaseSelfTestResult {
     $errorText = [string](Get-ReleasePropertyValue $Result 'Error')
     $errors = @(Get-ReleasePropertyValue $Result 'Errors')
     $checks = @(Get-ReleasePropertyValue $Result 'Checks')
-    Assert-Equal ($Tag + ' result Version') '0.9.0' $version
+    Assert-Equal ($Tag + ' result Version matches version.json') (Get-SjcVersion) $version
     Assert-Equal ($Tag + ' result Status') 'Success' $status
     Assert-True ($Tag + ' result Error field is empty') ([string]::IsNullOrWhiteSpace($errorText)) $errorText
     Assert-Equal ($Tag + ' result Errors array is empty') 0 $errors.Count (($errors | ForEach-Object { [string]$_ }) -join '; ')
@@ -399,7 +418,7 @@ function Assert-ReleaseSelfTestResult {
         $guiFailedRaw = Get-ReleasePropertyValue $gui 'Failed'
         $guiSkippedRaw = Get-ReleasePropertyValue $gui 'Skipped'
         Assert-True ($Tag + ' Gui.Name is present') (-not [string]::IsNullOrWhiteSpace($guiName)) $guiName
-        Assert-Equal ($Tag + ' Gui.Version') '0.9.0' $guiVersion
+        Assert-Equal ($Tag + ' Gui.Version matches version.json') (Get-SjcVersion) $guiVersion
         Assert-Equal ($Tag + ' Gui.Status') 'Success' $guiStatus
         $guiPassedOk = (Test-ReleaseStringList $guiPassedRaw) -and @($guiPassedRaw).Count -gt 0 -and @($guiPassedRaw | Where-Object { $_ -isnot [string] }).Count -eq 0
         Assert-True ($Tag + ' Gui.Passed is a non-empty string array, not a boolean') $guiPassedOk ('type=' + $(if ($null -eq $guiPassedRaw) { 'null' } else { $guiPassedRaw.GetType().Name }) + '; value=' + (@($guiPassedRaw) -join ' | '))
@@ -452,4 +471,33 @@ function Remove-ReleaseSentinel {
         }
     }
     catch { }
+}
+
+function Get-ExeIconDelta {
+    param([string]$ExePath, [byte[]]$IconBytes)
+    # PE resource storage keeps each RT_ICON frame as its own resource blob, so the ICO
+    # directory is not copied verbatim. Verify every frame payload is present as a
+    # contiguous byte run in the EXE. Returns $null on success, else a diagnostic string.
+    if ([string]::IsNullOrWhiteSpace($ExePath) -or -not [IO.File]::Exists($ExePath)) { return 'EXE missing' }
+    if ($null -eq $IconBytes -or $IconBytes.Length -lt 6) { return 'icon bytes missing' }
+    # ISO-8859-1 gives a lossless 1:1 byte<->char map, letting String.IndexOf (native,
+    # optimised) search multi-megabyte binaries without a PowerShell byte loop.
+    $latin1 = [Text.Encoding]::GetEncoding(28591)
+    $exeText = $latin1.GetString([IO.File]::ReadAllBytes($ExePath))
+    $count = [int][BitConverter]::ToUInt16($IconBytes, 4)
+    if ($count -le 0) { return 'icon has no frames' }
+    $missing = New-Object 'System.Collections.Generic.List[string]'
+    for ($i = 0; $i -lt $count; $i++) {
+        $o = 6 + $i * 16
+        $size = $IconBytes[$o]; if ($size -eq 0) { $size = 256 }
+        $length = [int][BitConverter]::ToUInt32($IconBytes, $o + 8)
+        $offset = [int][BitConverter]::ToUInt32($IconBytes, $o + 12)
+        if ($length -le 0 -or ($offset + $length) -gt $IconBytes.Length) { $missing.Add($size.ToString() + ':bad-ico-entry'); continue }
+        $frame = New-Object byte[] $length
+        [Array]::Copy($IconBytes, $offset, $frame, 0, $length)
+        $frameText = $latin1.GetString($frame)
+        if ($exeText.IndexOf($frameText, [StringComparison]::Ordinal) -lt 0) { $missing.Add($size.ToString() + ':' + $length + 'B') }
+    }
+    if ($missing.Count -gt 0) { return ('missing icon frames in EXE: ' + ($missing -join ',')) }
+    return $null
 }

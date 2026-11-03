@@ -31,7 +31,8 @@ try {
     [void](Save-Evidence 'scan-result' $scan)
 
     Assert-Equal 'scan status is Success' 'Success' $scan.Status $scan.Error
-    Assert-True 'scan reports version 0.9.0' ([string]$scan.Version -eq '0.9.0') ([string]$scan.Version)
+    Assert-Equal 'scan reports the version.json product version' (Get-SjcVersion) ([string]$scan.Version)
+    Assert-Equal 'scan reports the Recommended profile it was opened with' 'Recommended' ([string]$scan.CleaningProfile)
     Assert-Equal 'scan TaskId equals the task directory GUID' ([IO.Path]::GetFileName($task)) ([string]$scan.TaskId)
 
     $candidates = @(Get-CandidateLines $scan.PlanPath)
@@ -62,7 +63,9 @@ try {
 
     $categories = @($scan.Categories)
     Assert-Equal 'one category per selected rule' 2 $categories.Count
-    $categoryProps = @('RuleId', 'Name', 'Group', 'Risk', 'Root', 'Count', 'Bytes', 'Status', 'Note') | Sort-Object
+    # New contract: each category also exposes the sealing profile and the effective
+    # minimum age that produced the candidate counts.
+    $categoryProps = @('RuleId', 'Name', 'Group', 'Risk', 'Root', 'CleaningProfile', 'MinimumAgeHours', 'Count', 'Bytes', 'Status', 'Note') | Sort-Object
     $badCategoryShape = @($categories | Where-Object { $actual = (@($_.PSObject.Properties.Name | Sort-Object) -join ','); $actual -ne ($categoryProps -join ',') })
     Assert-True 'categories expose the contract fields' ($badCategoryShape.Count -eq 0) (@($categories[0].PSObject.Properties.Name) -join ',')
     $oldCat = @($categories | Where-Object { $_.RuleId -eq 'SandboxOld' })[0]

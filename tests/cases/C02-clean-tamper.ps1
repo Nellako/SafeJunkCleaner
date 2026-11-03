@@ -77,7 +77,7 @@ try {
         param($Context)
         if ($script:c02Changed) {
             $root = Join-Path $script:c02Sandbox 'files'
-            return @([pscustomobject]@{ Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = '自有测试旧文件'; Group = '合成测试'; Risk = '中低'; Recommended = $true; Root = $root; Patterns = @('*.tmp'); ExcludePatterns = @(); MinimumAgeHours = 1; RequiresClosedProcess = @(); Available = $true; Note = '' })
+            return @([pscustomobject]@{ Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = '自有测试旧文件'; Group = '合成测试'; Risk = '中低'; Recommended = $true; Root = $root; Patterns = @('*.tmp'); ExcludePatterns = @(); MinimumAgeHours = 1; RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'; OverrideEnvironment = @(); RequiresClosedProcess = @(); Available = $true; Note = '' })
         }
         & $script:c02OriginalRulesFn -Context $Context
     }

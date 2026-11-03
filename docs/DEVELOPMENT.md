@@ -24,7 +24,9 @@ powershell.exe -NoProfile -File .\scripts\build.ps1 -Ps2ExeModulePath '<ps2exe.p
 
 脚本不自动安装依赖。每次输出新的 `artifacts/builds/<时间_GUID>/`，包括单文件、可选EXE、相对源路径和SHA-256构建清单。EXE文件版本来自version.json，不能只重命名程序冒充版本变化。
 
-图标位于assets/app.ico；如需重新生成，先检查现有文件并另行决定替换，再使用generate-icon.ps1。默认拒绝覆盖。
+图标位于assets/app.ico，原立绘素材保存在assets/app-icon-source.png。generate-icon.ps1将透明区域合成为纯白方形背景，保留比例和主体，生成16/24/32/48/64/128/256尺寸；默认拒绝覆盖，替换现有文件需显式-Force。可用-OutputPath和-PreviewDirectory生成独立候选与预览。
+
+构建清单包含assets/app.ico和build.ps1自身的SHA-256。单文件脚本嵌入SjcEmbeddedIconBase64供WPF窗口使用，EXE资源使用相同ICO；无需分发独立图标文件才能显示窗口图标。不要通过清理系统图标缓存来代替新产物验证。
 
 ## 回归
 
@@ -44,12 +46,18 @@ powershell.exe -NoProfile -STA -File .\tests\run_all.ps1 -Scope Release -ExePath
 
 ## 版本与状态格式
 
-公开产品版本由version.json统一控制；任务还带独立planSchemaVersion。旧版本所有权标记、旧扫描计划或格式缺失均拒绝直接执行，要求重新扫描，不将旧计划自动迁移成删除授权。
+公开产品版本由version.json统一控制；当前 develop 目标为0.10.0开发候选，不代表正式发布。任务还带独立planSchemaVersion。旧版本所有权标记、旧扫描计划或格式缺失均拒绝直接执行，要求重新扫描，不将旧计划自动迁移成删除授权。
 
-`SafeJunkCleaner\v3`、`preferences-v3.json`、`SafeJunkCleaner-v3-seal`和原生类型命名中的v3是内部兼容标识，不是对外版本。保持用途标识以避免误处理既有私有数据；它们不改变0.9.0公开版本。
+`SafeJunkCleaner\v3`、`preferences-v3.json`、`SafeJunkCleaner-v3-seal`和原生类型命名中的v3是内部兼容标识，不是对外版本。保持用途标识以避免误处理既有私有数据；它们不决定当前对外产品版本。
 
 ## 本地发布门禁
 
-`publish.ps1 -BuildDirectory ... -VerificationDirectory ... -GuiAcceptancePath ...` 检查完整用例、实际窗口证据及当前源码/EXE指纹，输出新的releases目录。GUI证据要求实际窗口、规则选择、候选翻页保留恢复和无生产删除检查，不能只创建一个JSON声称通过。
+`publish.ps1 -BuildDirectory ... -VerificationDirectory ... -GuiAcceptancePath ...` 检查完整用例、实际窗口证据及当前源码/EXE指纹，输出新的releases目录。GUI证据要求实际窗口、规则选择、候选翻页保留恢复、无生产删除、白底应用图标、紧凑布局与档位确认检查，并绑定GuiSourceSHA256及IconSHA256。不能只创建一个JSON声称通过；没有实际观察的项必须阻塞发布。
 
 公开包只复制明确文档和相对路径清单，输出脱敏的通过摘要，不带本地日志、完整原始suite结果或截图。脚本仅整理本地包，不上传GitHub。上传、创建远程仓库、提交或推送必须另行执行并确认。
+
+## 两个本地仓库的发布晋级
+
+`develop`负责开发，`main`负责验收后的发布版本；父汇总目录本身不是Git仓库。日常在ZCode直接打开develop查看Git状态；尚未核实ZCode在父目录的嵌套仓库入口行为，不将项目脚本称为ZCode自身功能修复。
+
+本地晋级工具的默认预检、固定提交与证据绑定、显式快进及失败处理见[本地晋级说明](LOCAL-PROMOTION.md)。本轮不会自动提交或晋级；未提交的开发候选即使回归通过，也不能直接当成固定提交发布。

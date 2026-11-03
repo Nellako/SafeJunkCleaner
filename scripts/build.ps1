@@ -19,12 +19,18 @@ foreach($relative in $sourceFiles){
     if($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191){throw "UTF-8 BOM required: $relative"}
     $sourceRecords += [pscustomobject]@{Path=$relative;SHA256=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash}
 }
-$sourceRecords += [pscustomobject]@{Path='version.json';SHA256=(Get-FileHash -LiteralPath (Join-Path $root 'version.json') -Algorithm SHA256).Hash}
+foreach($relative in @('version.json','assets\app.ico','scripts\build.ps1')){
+    $file=Join-Path $root $relative
+    if(-not [IO.File]::Exists($file)){throw "Missing build input: $relative"}
+    $sourceRecords += [pscustomobject]@{Path=$relative;SHA256=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash}
+}
 $entry=[IO.File]::ReadAllText((Join-Path $root $sourceFiles[0]))
 $modules=foreach($relative in $sourceFiles[1..5]){"`r`n# region $relative`r`n"+[IO.File]::ReadAllText((Join-Path $root $relative))+"`r`n# endregion`r`n"}
 $marker='# <SJC-MODULES>'
 if(($entry.Split(@($marker),[StringSplitOptions]::None)).Count -ne 2){throw 'Expected exactly one module marker.'}
 $embedded='$script:SjcEmbeddedVersion = '+"[pscustomobject]@{version='$version';fileVersion='$fileVersion';planSchemaVersion=$($metadata.planSchemaVersion)}`r`n"
+$iconBase64=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root 'assets\app.ico')))
+$embedded += '$script:SjcEmbeddedIconBase64 = '+"'$iconBase64'`r`n"
 $combined=$entry.Replace($marker,$embedded+($modules -join "`r`n"))
 $tokens=$null;$errors=$null
 [void][Management.Automation.Language.Parser]::ParseInput($combined,[ref]$tokens,[ref]$errors)

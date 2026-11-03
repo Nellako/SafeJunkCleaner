@@ -33,8 +33,8 @@ try {
         if ($script:ruleOverrideApplied) {
             $root = Join-Path $script:s02Sandbox 'files'
             @(
-                [pscustomobject]@{ Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = 'overlap-owner'; Group = 'test'; Risk = '低'; Recommended = $true; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
-                [pscustomobject]@{ Id = 'SandboxLog'; TemplateId = 'SandboxLog'; Name = 'overlap-second'; Group = 'test'; Risk = '低'; Recommended = $false; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
+                [pscustomobject]@{ Id = 'SandboxOld'; TemplateId = 'SandboxOld'; Name = 'overlap-owner'; Group = 'test'; Risk = '低'; Recommended = $true; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'; OverrideEnvironment = @(); RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
+                [pscustomobject]@{ Id = 'SandboxLog'; TemplateId = 'SandboxLog'; Name = 'overlap-second'; Group = 'test'; Risk = '低'; Recommended = $false; Root = $root; Patterns = @('*.tmp', '*'); ExcludePatterns = @(); MinimumAgeHours = 24; RecommendedMinimumAgeHours = 24; DeepMinimumAgeHours = 24; CleaningProfile = 'Recommended'; OverrideEnvironment = @(); RequiresClosedProcess = @(); Available = $true; Note = 'test double' }
             )
             return
         }

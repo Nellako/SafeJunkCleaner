@@ -52,7 +52,7 @@ try {
         Assert-True 'Test-SjcGui returned an object' ($null -ne $gui) 'null result'
         if ($null -ne $gui) {
             Assert-True 'Test-SjcGui Name is present' (-not [string]::IsNullOrWhiteSpace([string]$gui.Name)) ([string]$gui.Name)
-            Assert-Equal 'Test-SjcGui Version' '0.9.0' ([string]$gui.Version) ''
+            Assert-Equal 'Test-SjcGui Version matches version.json' (Get-SjcVersion) ([string]$gui.Version) ''
             Assert-Equal 'Test-SjcGui Status' 'Success' ([string]$gui.Status) (@($gui.Failed) -join ' | ')
             $passedOk = (Test-ReleaseStringList $gui.Passed) -and @($gui.Passed).Count -gt 0 -and @($gui.Passed | Where-Object { $_ -isnot [string] }).Count -eq 0
             Assert-True 'Test-SjcGui Passed is a non-empty string array (not a boolean)' $passedOk ('type=' + $(if ($null -eq $gui.Passed) { 'null' } else { $gui.Passed.GetType().Name }) + '; passed=' + @($gui.Passed).Count)

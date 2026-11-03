@@ -20,7 +20,9 @@ Segoe MDL2 Assets 等系统字体只在运行时引用，不将字体文件嵌�
 
 ## 应用图标
 
-`assets/app.ico` 是本项目的简单几何图形，生成源为 `scripts/generate-icon.ps1`。没有嵌入旧立绘、第三方图片或字体。旧开发目录中的素材未纳入公开仓库。
+应用图标恢复自旧版立绘素材，原素材保存为 `assets/app-icon-source.png`，由 `scripts/generate-icon.ps1` 合成为纯白背景的多尺寸 `assets/app.ico`。2026-11-03，项目权利人确认本人原创或拥有覆盖应用及源码包分发的相应权利；此处记录权利人声明，不代表独立第三方权属认证。
+
+图标素材的使用权限受项目 LICENSE 及适用权利约束，不因公开展示而获得额外许可。操作图标使用 Windows 自带 Segoe MDL2 Assets 字形，仅在运行时引用系统字体，不嵌入字体文件。
 
 ## 未使用的运行时
 

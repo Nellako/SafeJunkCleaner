@@ -53,10 +53,17 @@ $script:AllCases = @(
     [pscustomobject]@{ Id = 'L01-logging'; Name = '日志唯一/JSON/无日志明确失败'; File = 'L01-logging.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'W01-worker-boundary'; Name = 'Worker 通道/载荷边界/失败传播'; File = 'W01-worker-boundary.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'V01-version-contract'; Name = '公开版本/计划格式/旧任务拒绝'; File = 'V01-version-contract.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N01-profile-context'; Name = '档位上下文/精确大小写/直接改拒绝/规则重建/Deep年龄'; File = 'N01-profile-context.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N02-profile-preferences'; Name = '偏好档位默认/往返/未知字段/非法值'; File = 'N02-profile-preferences.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N03-plan-profile-seal'; Name = '封存档位/跨档拒绝/切回仍拒/会话epoch/旧meta拒绝'; File = 'N03-plan-profile-seal.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N04-override-gate'; Name = '覆盖变量仅禁用/UnsupportedConfiguration/逐文件重验'; File = 'N04-override-gate.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N05-icon-white-background'; Name = '白底图标 7 尺寸/纯白角/不透明/居中/PNG256'; File = 'N05-icon-white-background.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N06-local-promotion'; Name = '晋级工具独立自测 30 项 + 真实只读预检 + 云标签静态守卫'; File = 'N06-local-promotion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'G01-gui-selftest'; Name = 'Test-SjcGui 无破坏状态/冻结/快照/分页'; File = 'G01-gui-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'G02-background-preview'; Name = '真实后台分页/导出/保留/失败取消恢复'; File = 'G02-background-preview.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
+    [pscustomobject]@{ Id = 'G03-profile-ui'; Name = '档位控件/严格载荷/失效重扫/确认窗口档位'; File = 'G03-profile-ui.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'W02-worker-selftest'; Name = 'Main SelfTest 完整沙箱 + 严格退出码'; File = 'W02-worker-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $false }
-    [pscustomobject]@{ Id = 'X01-exe-selftest'; Name = 'EXE 版本/签名/SelfTest 输出'; File = 'X01-exe-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $true; Sta = $false }
+    [pscustomobject]@{ Id = 'X01-exe-selftest'; Name = 'EXE 版本/签名/SelfTest 输出/图标资源'; File = 'X01-exe-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $true; Sta = $false }
 )
 
 function Add-GateError {
@@ -122,7 +129,16 @@ function Test-ModuleDefinitionOnly {
 
 function Get-SourceHashes {
     $records = [System.Collections.Generic.List[object]]::new()
-    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'scripts\build.ps1')) {
+    # Icon and build-script bytes are acceptance inputs: changing either must invalidate a
+    # previous acceptance, so they belong in the same hash set publish/promotion compare.
+    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'scripts\build.ps1', 'assets\app.ico')) {
+        $record = Get-SourceRecord (Join-Path $script:RepoRoot $relative) -Optional
+        if ($null -ne $record) { $records.Add($record) }
+    }
+    # Additional executed/derived inputs: N06 runs the promotion scripts, and the icon is
+    # generated from app-icon-source.png by generate-icon.ps1. Hashing them means a change
+    # to any of these invalidates an existing acceptance instead of reusing a stale pass.
+    foreach ($relative in @('scripts\generate-icon.ps1', 'assets\app-icon-source.png', 'scripts\local-promotion-common.ps1', 'scripts\promote-local.ps1', 'scripts\seal-local-promotion.ps1', 'scripts\test-local-promotion.ps1', 'scripts\publish.ps1')) {
         $record = Get-SourceRecord (Join-Path $script:RepoRoot $relative) -Optional
         if ($null -ne $record) { $records.Add($record) }
     }
@@ -277,7 +293,7 @@ $script:Limitations.Add('真实 GUI 窗口/DPI/多显示器视觉未由本套件
 $script:Limitations.Add('文件名竞态与路径 TOCTOU 无法由测试全绿证明；用例只验证已实现的重解析/身份/封存复核分支。')
 $script:Limitations.Add('Main 对 Cancelled/Partial 的退出码未能在不扫描生产目录的前提下独立触发；已实测 Failed 与 SelfTest 成功路径，源码契约要求仅 Success 返回 0。')
 if ($Scope -eq 'Core') {
-    $script:Limitations.Add('Scope=Core 未执行 GUI/Test-SjcGui、完整 SelfTest、EXE、真实回收站；不得据此声称 v0.9.0 已发布验收。')
+    $script:Limitations.Add('Scope=Core 未执行 GUI/Test-SjcGui、完整 SelfTest、EXE、真实回收站或真实桌面观察；不得据此声称本版本已发布验收。')
 }
 if ($KeepSandbox) { $script:Limitations.Add('本次使用 -KeepSandbox：GUID 沙箱保留在 artifacts 之外的生产 StateRoot\Sandboxes 下，需人工确认后清理。') }
 $script:DeclaredExclusions.Add('真实回收站清空（Invoke-SjcRecycle 以测试上下文拒绝；生产调用需 OS 确认）未执行。')
