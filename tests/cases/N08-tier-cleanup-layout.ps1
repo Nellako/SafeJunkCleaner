@@ -59,8 +59,10 @@ try {
     Assert-True 'Chrome Cache instances keep their real chrome process guard' (@($prodRules | Where-Object { $_.TemplateId -eq 'ChromeCache' }).Count -eq 0 -or @($prodRules | Where-Object { $_.TemplateId -eq 'ChromeCache' -and @($_.RequiresClosedProcess) -contains 'chrome' }).Count -gt 0) ''
 
     # ---- 2. RunningProcess is a real, live verdict for real roots -------------
-    # Evaluate the real process gate (no override) on a real installed rule whose
-    # application is currently running. This reads process state only.
+    # Optional observation: if a real installed rule's application happens to be
+    # running, evaluate its real guard too. The user may close the app at any time,
+    # so a miss is an observation limitation, never a coverage gap: the mandatory
+    # RunningProcess branch is exercised by the controlled guard below.
     $runningNames = @('chrome', 'msedge', 'ms-teams', 'Teams', 'msedgewebview2') | Where-Object { @([Diagnostics.Process]::GetProcessesByName($_)).Count -gt 0 }
     $guardRules = @($prodRules | Where-Object { $_.Available -and @($_.RequiresClosedProcess).Count -gt 0 -and @($_.RequiresClosedProcess | Where-Object { $runningNames -contains $_ }).Count -gt 0 })
     if ($guardRules.Count -gt 0) {
@@ -69,18 +71,39 @@ try {
         Add-Limitation ('N08 在本机观察到运行中的应用：' + ($runningNames -join ',') + '；真实规则 ' + $guardRule.Id + ' 的进程闸门返回"未关闭"。本用例不扫描真实缓存根。')
     }
     else {
-        Add-Limitation 'N08 未找到"已安装且要求关闭进程"的真实规则命中正在运行的进程；RunningProcess 实测分支记为未覆盖。'
-        Add-CoverageGap 'N08 未能在真实规则上实测 RunningProcess 分支（本机无匹配的运行进程/已安装规则）。'
+        Add-Limitation 'N08 可选实测：本机没有"已安装且要求关闭进程"的真实规则命中正在运行的应用（用户可随时关闭应用，属环境波动）；RunningProcess 必需分支由下一段的受控真实进程守卫覆盖，未计为覆盖缺口。'
     }
 
-    # The three new Teams rules must skip whenever any of ms-teams / Teams /
-    # msedgewebview2 is running. The process gate is exercised with a controllable
-    # double (a live PowerShell PID is renamed into the rule's process list) so no real
-    # application is started or stopped. Layout/roots/preset level still come from the
-    # production Teams rules.
-    $teamsProcessNames = @('ms-teams', 'Teams', 'msedgewebview2')
+    # Mandatory RunningProcess coverage, owned and deterministic. The controllable
+    # double is the test process' own live ProcessName (PID $PID), which is harmless
+    # and never started/stopped by this case. Rule objects are copies of the
+    # production template table (ids/patterns/levels/ages unchanged); only the
+    # RequiresClosedProcess field is mapped onto the double, and ProcessPolicy is
+    # retained, so the production guard implementation is the code under test.
     $livePid = $PID
     $liveName = [Diagnostics.Process]::GetProcessById($livePid).ProcessName
+    $guardTemplate = @($prodRules | Where-Object { $_.Id -ceq 'NewTeamsCache' })[0]
+    Assert-True 'the controlled guard rule comes from the production template table' ($null -ne $guardTemplate -and [string]$guardTemplate.ProcessPolicy -ceq 'NewTeamsWebView2') ([string]$guardTemplate.ProcessPolicy)
+    $runningRule = $guardTemplate.PSObject.Copy()
+    $runningRule.RequiresClosedProcess = @($liveName)
+    $runningGuard = Get-SjcProcessGuard $runningRule
+    Assert-True 'a live owned process (current PowerShell ProcessName) yields Closed=false/RunningProcess' ((-not [bool]$runningGuard.Closed) -and [string]$runningGuard.Status -ceq 'RunningProcess') ('closed=' + [string]$runningGuard.Closed + '; status=' + [string]$runningGuard.Status + '; note=' + [string]$runningGuard.Note)
+    Assert-True 'the RunningProcess guard result carries a conservative Note' (-not [string]::IsNullOrWhiteSpace([string]$runningGuard.Note)) ([string]$runningGuard.Note)
+    $absentRule = $guardTemplate.PSObject.Copy()
+    $absentRule.RequiresClosedProcess = @('SjcNoSuchProcess_' + [guid]::NewGuid().ToString('N'))
+    $absentGuard = Get-SjcProcessGuard $absentRule
+    Assert-True 'an absent process yields Closed=true/Success' ([bool]$absentGuard.Closed -and [string]$absentGuard.Status -ceq 'Success') ('closed=' + [string]$absentGuard.Closed + '; status=' + [string]$absentGuard.Status)
+    $unknownRule = $guardTemplate.PSObject.Copy()
+    $unknownRule.ProcessPolicy = 'FuturePolicy'
+    $unknownGuard = Get-SjcProcessGuard $unknownRule
+    Assert-True 'an unknown process policy stays Closed=false/ProcessGuardUnknown' ((-not [bool]$unknownGuard.Closed) -and [string]$unknownGuard.Status -ceq 'ProcessGuardUnknown') ('closed=' + [string]$unknownGuard.Closed + '; status=' + [string]$unknownGuard.Status)
+
+    # The three new Teams rules must skip whenever any of ms-teams / Teams /
+    # msedgewebview2 is running. Each production guard position is exercised with the
+    # same controllable double (the live PowerShell process name), so no real
+    # application is started or stopped. Layout/roots/preset level still come from the
+    # production Teams rules; WebView2 ownership classification belongs to N09.
+    $teamsProcessNames = @('ms-teams', 'Teams', 'msedgewebview2')
     $teamsGateErrors = New-Object 'System.Collections.Generic.List[string]'
     foreach ($teamsId in @('NewTeamsCache', 'NewTeamsGPUCache', 'NewTeamsCodeCache')) {
         $productionTeamsRule = @($prodRules | Where-Object { $_.Id -ceq $teamsId })[0]
@@ -91,18 +114,19 @@ try {
                 if ($_ -ceq $processName) { $liveName }
                 else { 'SjcAbsent_' + [guid]::NewGuid().ToString('N') }
             })
-            $blocked = -not (Test-SjcProcessesClosed $gateRule)
-            if (-not $blocked) { $teamsGateErrors.Add($teamsId + ':' + $processName + ':not-blocked') }
+            $gateResult = Get-SjcProcessGuard $gateRule
+            if ([bool]$gateResult.Closed -or [string]$gateResult.Status -cne 'RunningProcess') { $teamsGateErrors.Add($teamsId + ':' + $processName + ':closed=' + [string]$gateResult.Closed + ',status=' + [string]$gateResult.Status) }
         }
         # Control: an absent sentinel must let the same rule through (the gate is real).
         $freeRule = $productionTeamsRule.PSObject.Copy()
         $freeRule.RequiresClosedProcess = @('SjcNoSuchProcess_' + [guid]::NewGuid().ToString('N'))
-        if (-not (Test-SjcProcessesClosed $freeRule)) { $teamsGateErrors.Add($teamsId + ':sentinel-blocked') }
+        $freeGuard = Get-SjcProcessGuard $freeRule
+        if (-not [bool]$freeGuard.Closed -or [string]$freeGuard.Status -cne 'Success') { $teamsGateErrors.Add($teamsId + ':sentinel-not-success:' + [string]$freeGuard.Status) }
         $realNamesOk = @($productionTeamsRule.RequiresClosedProcess | Where-Object { $teamsProcessNames -contains $_ }).Count -eq 3
         if (-not $realNamesOk) { $teamsGateErrors.Add($teamsId + ':production-names=' + (@($productionTeamsRule.RequiresClosedProcess) -join '/')) }
     }
     Assert-True 'a running ms-teams/Teams/msedgewebview2 process blocks every new Teams rule (controllable double)' ($teamsGateErrors.Count -eq 0) (($teamsGateErrors | Select-Object -First 6) -join '; ')
-    Add-Limitation ('N08 的进程跳过分支用当前进程名 ' + $liveName + ' 作为可控 double，未启动或结束任何真实 Teams/WebView2 应用。')
+    Add-Limitation ('N08 的进程跳过分支用当前 PowerShell 的 ProcessName ' + $liveName + '（PID ' + $livePid + '）作为受控测试替身，映射字段为 RequiresClosedProcess，ProcessPolicy 保留生产值；未启动或结束任何真实 Teams/WebView2/浏览器应用。')
 
     # ---- 3. Layout builder (real templates, sandbox-anchored roots) -----------
     $originalRules = ${function:Get-SjcRules}

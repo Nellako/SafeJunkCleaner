@@ -25,6 +25,7 @@ $script:Utf8Bom = New-Object Text.UTF8Encoding($true)
 $script:GateErrors = [System.Collections.Generic.List[string]]::new()
 $script:Limitations = [System.Collections.Generic.List[string]]::new()
 $script:DeclaredExclusions = [System.Collections.Generic.List[string]]::new()
+$script:ResultReadRetries = [System.Collections.Generic.List[string]]::new()
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
@@ -34,6 +35,13 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 if (-not [IO.Directory]::Exists($OutputDirectory)) { [void][IO.Directory]::CreateDirectory($OutputDirectory) }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $script:OutputDirectory = $OutputDirectory
+# Normalize -ExePath once at entry so SourceHashes and Exe.Path always carry the same
+# absolute path a suite run saw. A relative path passed on the command line resolves
+# against the caller's working directory here; if it were left relative, the suite
+# could pass while the sealed/promotion evidence (which requires absolute paths and
+# compares SourceHashes against Exe.Path) would fail or mismatch. Parameter binding is
+# unchanged and the case-selection/gate logic is untouched by this normalization.
+if (-not [string]::IsNullOrWhiteSpace($ExePath)) { $ExePath = [IO.Path]::GetFullPath($ExePath) }
 
 $script:AllCases = @(
     [pscustomobject]@{ Id = 'R01-rule-inventory'; Name = '规则清单/禁止项/精确根/数量'; File = 'R01-rule-inventory.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
@@ -196,6 +204,65 @@ function ConvertTo-ObjectArrayValue {
     return ,([object[]]$items)
 }
 
+function Test-SharingViolationErrorRecord {
+    param($ErrorRecord)
+    $cursor = $ErrorRecord.Exception
+    while ($null -ne $cursor) {
+        # ERROR_SHARING_VIOLATION (32) / ERROR_LOCK_VIOLATION (33) are retryable; every
+        # other HResult (parse, missing file, access denied) is not. The IOException type
+        # check keeps an unrelated exception with the same low word from being retried.
+        if ($cursor -is [IO.IOException]) {
+            $low = ([int]$cursor.HResult) -band 0xFFFF
+            if ($low -eq 32 -or $low -eq 33) { return $true }
+        }
+        if ($null -ne $cursor.InnerException) { $cursor = $cursor.InnerException } else { $cursor = $null }
+    }
+    # Some PowerShell providers throw a plain IOException without surfacing the Win32
+    # code; the OS wording still identifies a transient sharing lock.
+    $exception = $ErrorRecord.Exception
+    if ($exception -is [IO.IOException] -and $exception.Message -match '(?i)another process|另一进程') { return $true }
+    return $false
+}
+
+# A cloud-synced checkouts directory can hold a result JSON under a transient
+# sharing lock while the case process is tearing down (observed as HRESULT 0x80070020
+# ERROR_SHARING_VIOLATION and 0x80070021 ERROR_LOCK_VIOLATION). Only those two are
+# retried, a bounded number of times. Everything else stays a hard failure: a parse
+# error, a missing file, a non-zero exit, a timeout or a CoverageGap is never retried.
+function Get-ResultJsonWithRetry {
+    param(
+        [string]$Path,
+        [int]$MaxAttempts = 5,
+        [int[]]$DelayMilliseconds = @(100, 200, 200, 300)
+    )
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            $text = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                return [pscustomobject]@{ Success = $false; Value = $null; Error = '结果文件为空（不是合法 JSON）'; Attempts = $attempt; Retried = ($attempt -gt 1) }
+            }
+            $value = $text | ConvertFrom-Json
+            if ($null -eq $value) {
+                return [pscustomobject]@{ Success = $false; Value = $null; Error = '结果 JSON 为 null，不是结果对象'; Attempts = $attempt; Retried = ($attempt -gt 1) }
+            }
+            return [pscustomobject]@{ Success = $true; Value = $value; Error = ''; Attempts = $attempt; Retried = ($attempt -gt 1) }
+        }
+        catch {
+            if (-not (Test-SharingViolationErrorRecord $_)) {
+                return [pscustomobject]@{ Success = $false; Value = $null; Error = $_.Exception.Message; Attempts = $attempt; Retried = $false }
+            }
+            if ($attempt -ge $MaxAttempts) {
+                return [pscustomobject]@{ Success = $false; Value = $null; Error = ('共享冲突重试 ' + $attempt + ' 次后仍无法读取：' + $_.Exception.Message); Attempts = $attempt; Retried = $true }
+            }
+            $wait = 100
+            if ($DelayMilliseconds.Count -ge $attempt) { $wait = $DelayMilliseconds[$attempt - 1] }
+            Start-Sleep -Milliseconds $wait
+        }
+    }
+}
+
 function Write-Summary {
     param([string]$Status, $Results, [int]$ExitCode)
     $passed = @($Results | Where-Object { $_.Status -eq 'Passed' }).Count
@@ -230,6 +297,7 @@ function Write-Summary {
         DeclaredExclusions = (ConvertTo-StringArrayValue $script:DeclaredExclusions)
         CoverageGaps = (ConvertTo-StringArrayValue ($Results | ForEach-Object { @($_.CoverageGaps) } | Where-Object { $_ }))
         GateErrors = (ConvertTo-StringArrayValue $script:GateErrors)
+        ResultReadRetries = (ConvertTo-StringArrayValue $script:ResultReadRetries)
         OutputDirectory = $script:OutputDirectory
         ExitCode = $ExitCode
     }
@@ -379,9 +447,21 @@ foreach ($item in $selected) {
     $proc.Dispose()
     $caseResult = $null
     $parseError = ''
+    $readAttempts = 0
     if ([IO.File]::Exists($resultPath)) {
-        try { $caseResult = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json }
-        catch { $parseError = $_.Exception.Message }
+        $read = Get-ResultJsonWithRetry -Path $resultPath
+        $readAttempts = [int]$read.Attempts
+        if ($read.Success) {
+            $caseResult = $read.Value
+        }
+        else {
+            $parseError = $read.Error
+        }
+        if ($read.Retried) {
+            $note = 'result JSON read required ' + $readAttempts + ' attempt(s) due to sharing/lock violation: ' + $caseId
+            [void]$script:ResultReadRetries.Add($note)
+            Write-Output ('[RETRY] ' + $note)
+        }
     }
     $status = 'Failed'
     $errorText = ''
