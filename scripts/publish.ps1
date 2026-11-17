@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$BuildDirectory,
     [Parameter(Mandatory=$true)][string]$VerificationDirectory,
-    [Parameter(Mandatory=$true)][string]$GuiAcceptancePath
+    [Parameter(Mandatory=$true)][string]$GuiAcceptancePath,
+    [string]$FinalTestResultPath
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -12,6 +13,12 @@ $root=Split-Path -Parent $PSScriptRoot
 $version=Get-SjcVersion
 $build=[IO.Path]::GetFullPath($BuildDirectory)
 $verification=[IO.Path]::GetFullPath($VerificationDirectory)
+if ($version -cin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) {
+    if (-not $FinalTestResultPath) { throw 'Component publish requires final test result; legacy summaries cannot replace complete evidence.' }
+    . (Join-Path $PSScriptRoot 'local-promotion-common.ps1')
+    New-LpComponentRelease $root $build $FinalTestResultPath $GuiAcceptancePath | ConvertTo-Json -Depth 8
+    return
+}
 $manifest=Get-Content -LiteralPath (Join-Path $build 'build-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $summary=Get-Content -LiteralPath (Join-Path $verification 'summary.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $gui=Get-Content -LiteralPath $GuiAcceptancePath -Raw -Encoding UTF8 | ConvertFrom-Json

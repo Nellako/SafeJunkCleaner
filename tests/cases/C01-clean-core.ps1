@@ -125,16 +125,27 @@ try {
     Assert-Equal 'log records the single skip' 1 ([int64]$lateLog.Skipped)
     Assert-Equal 'log records the read-only error count' 1 ([int64]$lateLog.ErrorCount)
 
-    # Recycle mode on the test context is exercised only through a real sandbox file,
-    # never a production path. The file must leave the sandbox (moved to the bin).
+    # Explicit recording double only: fixture remains, no real recycle-bin operation.
     $thirdTask = New-SjcTaskDirectory -Context $context
     $recycleFile = Join-Path $files 'recycle-me.tmp'
     New-TestFile -Path $recycleFile -Bytes 16 -AgeHours 96 | Out-Null
     $scan3 = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld') -TaskDirectory $thirdTask
+    $script:RecycleDoublePaths = [System.Collections.Generic.List[string]]::new()
+    $originalRecycle = ${function:Move-SjcFileToRecycleBin}
+    function Move-SjcFileToRecycleBin {
+        param($Context,[string]$Path)
+        $configuration=Get-SjcContextConfiguration $Context
+        if (-not $configuration.IsTest) { throw '回收替身仅接受已注册测试上下文。' }
+        Assert-SjcSandbox $configuration.TestRoot
+        if (-not (Test-SjcPathWithin $Path (Join-Path $configuration.TestRoot 'files'))) { throw '替身目标越界。' }
+        [void]$script:RecycleDoublePaths.Add($Path)
+    }
+    if ((Get-Command Move-SjcFileToRecycleBin).Definition -notmatch 'RecycleDoublePaths') { throw '回收替身未安装，拒绝执行。' }
     $recycleClean = Invoke-SjcClean -Context $context -TaskDirectory $thirdTask -RecycleMode $true
-    Assert-True 'recycle-mode clean moves the owned sandbox file out of place' ([int64]$recycleClean.Deleted -ge 1 -and $recycleClean.Status -ne 'Failed') ('status=' + $recycleClean.Status + '; deleted=' + $recycleClean.Deleted + '; error=' + $recycleClean.Error)
-    Assert-True 'recycle-mode file is no longer at its path' (-not [IO.File]::Exists($recycleFile)) ''
-    Add-DeclaredExclusion '回收站清空（Invoke-SjcRecycle/SHEmptyRecycleBin）未执行；仅对自有沙箱文件做过移到回收站的单文件操作，未清空用户回收站。'
+    Set-Item -Path 'Function:\Move-SjcFileToRecycleBin' -Value $originalRecycle
+    Assert-True 'recycle-mode clean dispatches to explicit recording double' ([int64]$recycleClean.Deleted -ge 1 -and $recycleClean.Status -ne 'Failed') ('status=' + $recycleClean.Status + '; deleted=' + $recycleClean.Deleted + '; error=' + $recycleClean.Error)
+    Assert-True 'recording double receives fixture and preserves it' ($script:RecycleDoublePaths.Contains($recycleFile) -and [IO.File]::Exists($recycleFile)) ''
+    Add-DeclaredExclusion '真实移入/清空回收站均未执行；C01 仅使用不移动、不删除的显式记录替身；真实效果未测。'
 }
 catch {
     Assert-True ('case completed without unhandled exception: ' + $_.Exception.Message) $false $_.ScriptStackTrace

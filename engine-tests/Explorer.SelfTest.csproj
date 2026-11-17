@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+  <ItemGroup><Compile Include="Program.cs" /><Compile Include="TestEvidence.cs" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="..\engine\Explorer.Core\Explorer.Core.csproj" /></ItemGroup>
+</Project>

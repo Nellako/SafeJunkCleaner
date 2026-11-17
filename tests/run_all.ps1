@@ -10,7 +10,8 @@ param(
     [string]$ExePath = '',
     [int]$TimeoutSeconds = 900,
     [string[]]$Case = @(),
-    [switch]$KeepSandbox
+    [switch]$KeepSandbox,
+    [switch]$ParseOnly
 )
 
 Set-StrictMode -Version Latest
@@ -30,9 +31,17 @@ $script:ResultReadRetries = [System.Collections.Generic.List[string]]::new()
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
     $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
-    $OutputDirectory = Join-Path $script:RepoRoot ('artifacts\verification\run_' + $stamp + '_' + $suffix)
+    $OutputDirectory = Join-Path $script:RepoRoot ('..\phase1-run_' + $stamp + '_' + $suffix)
 }
-if (-not [IO.Directory]::Exists($OutputDirectory)) { [void][IO.Directory]::CreateDirectory($OutputDirectory) }
+# Bind execution to this runner's own repository; evidence is a new sibling tree.
+$allowedRepo=[IO.Path]::GetFullPath($script:RepoRoot)
+$evidenceParent=Split-Path -Parent $allowedRepo
+$OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
+if (-not $OutputDirectory.StartsWith($evidenceParent+'\',[StringComparison]::OrdinalIgnoreCase) -or $OutputDirectory.StartsWith($allowedRepo+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'OutputDirectory 必须是证据父目录下的新独立目录，不能在源码树中。' }
+. (Join-Path $script:RepoRoot 'src\Core.ps1')
+if (-not (Test-SjcNoReparsePath $OutputDirectory -AllowMissing)) { throw '证据目录祖先含重解析点。' }
+if ([IO.Directory]::Exists($OutputDirectory) -or [IO.File]::Exists($OutputDirectory)) { throw '证据输出目录必须为尚不存在的新目录，禁止覆盖旧运行。' }
+[void][IO.Directory]::CreateDirectory($OutputDirectory)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $script:OutputDirectory = $OutputDirectory
 # Normalize -ExePath once at entry so SourceHashes and Exe.Path always carry the same
@@ -66,7 +75,7 @@ $script:AllCases = @(
     [pscustomobject]@{ Id = 'N03-plan-profile-seal'; Name = '封存档位/跨档拒绝/切回仍拒/会话epoch/旧meta拒绝'; File = 'N03-plan-profile-seal.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N04-override-gate'; Name = '覆盖变量仅禁用/UnsupportedConfiguration/逐文件重验'; File = 'N04-override-gate.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N05-icon-white-background'; Name = '白底图标 7 尺寸/纯白角/不透明/居中/PNG256'; File = 'N05-icon-white-background.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
-    [pscustomobject]@{ Id = 'N06-local-promotion'; Name = '晋级工具独立自测 30 项 + 真实只读预检 + 云标签静态守卫'; File = 'N06-local-promotion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
+    [pscustomobject]@{ Id = 'N06-local-promotion'; Name = '旧版与0.16.1完整合成晋级/封装/打包门禁及无HEAD拒绝'; File = 'N06-local-promotion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N07-preset-custom-authorization'; Name = '三档预设集合包含关系/年龄表/CustomOnly/预设精确集合/Custom 授权/封存模式'; File = 'N07-preset-custom-authorization.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N08-tier-cleanup-layout'; Name = '三档真实新增布局扫描/NewTeams三子根/旁路业务文件保护/逐档清理'; File = 'N08-tier-cleanup-layout.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'N09-engine-expansion'; Name = '精确PureCache白名单0/零年龄不绕过其他闸门/Teams WebView2归属(隔离mock)'; File = 'N09-engine-expansion.ps1'; Scope = 'Core'; RequiresGui = $false; RequiresExe = $false; Sta = $false }
@@ -76,8 +85,11 @@ $script:AllCases = @(
     [pscustomobject]@{ Id = 'G02-background-preview'; Name = '真实后台分页/导出/保留/失败取消恢复'; File = 'G02-background-preview.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'G03-profile-ui'; Name = '档位控件/严格载荷/失效重扫/确认窗口档位'; File = 'G03-profile-ui.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'G04-expansion-ui'; Name = '测试上下文/失效授权/发现维护取消/维护结果与释放'; File = 'G04-expansion-ui.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
+    [pscustomobject]@{ Id = 'E01-explorer-workbench'; Name = '深度探索桥接/Contract3无模型/重复键/必需字段/空间排行游标/Scope分析/取消/预算/清单hash启动门禁/DispatcherTimer'; File = 'E01-explorer-workbench.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
+    [pscustomobject]@{ Id = 'E02-explorer-suggestions'; Name = '深度探索建议/复核批准/两步确认/Disabled执行（假Host严格反例+真实Host止于Confirm，无模型）'; File = 'E02-explorer-suggestions.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
     [pscustomobject]@{ Id = 'W02-worker-selftest'; Name = 'Main SelfTest 完整沙箱 + 严格退出码'; File = 'W02-worker-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $false }
     [pscustomobject]@{ Id = 'X01-exe-selftest'; Name = 'EXE 版本/签名/SelfTest 输出/图标资源'; File = 'X01-exe-selftest.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $true; Sta = $false }
+    [pscustomobject]@{ Id = 'F01-explorer-completion'; Name = '批次/65历史/资源整理/诊断隐私/逐项分页/按钮/旧响应统一验收'; File = 'F01-explorer-completion.ps1'; Scope = 'Release'; RequiresGui = $true; RequiresExe = $false; Sta = $true }
 )
 
 function Add-GateError {
@@ -145,7 +157,7 @@ function Get-SourceHashes {
     $records = [System.Collections.Generic.List[object]]::new()
     # Icon and build-script bytes are acceptance inputs: changing either must invalidate a
     # previous acceptance, so they belong in the same hash set publish/promotion compare.
-    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'scripts\build.ps1', 'assets\app.ico')) {
+    foreach ($relative in @('version.json', 'src\Version.ps1', 'src\Main.ps1', 'src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1', 'src\Gui.ps1', 'src\ExplorerGui.ps1', 'scripts\build.ps1', 'assets\app.ico')) {
         $record = Get-SourceRecord (Join-Path $script:RepoRoot $relative) -Optional
         if ($null -ne $record) { $records.Add($record) }
     }
@@ -156,6 +168,7 @@ function Get-SourceHashes {
         $record = Get-SourceRecord (Join-Path $script:RepoRoot $relative) -Optional
         if ($null -ne $record) { $records.Add($record) }
     }
+    $records.Add((Get-SourceRecord (Join-Path $script:RepoRoot 'tests\cases\reviewed-core-cases.json')))
     foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'tests') -Recurse -File -Filter '*.ps1' | Sort-Object FullName)) {
         $record = Get-SourceRecord $file.FullName
         if ($null -ne $record) { $records.Add($record) }
@@ -309,7 +322,7 @@ function Write-Summary {
 # ---- source gates -----------------------------------------------------------
 if (-not [IO.File]::Exists($script:PowerShellPath)) { Add-GateError ('缺少 Windows PowerShell 5.1：' + $script:PowerShellPath) }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { Add-GateError '本套件只支持 Windows。' }
-$requiredModules = @('src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1')
+$requiredModules = @('src\Rules.ps1', 'src\Core.ps1', 'src\Discovery.ps1', 'src\Maintenance.ps1', 'src\Worker.ps1', 'src\ExplorerGui.ps1')
 foreach ($relative in $requiredModules) {
     $full = Join-Path $script:RepoRoot $relative
     if (-not [IO.File]::Exists($full)) { Add-GateError ('缺少模块：' + $relative); continue }
@@ -369,7 +382,7 @@ $script:Limitations.Add('Main 对 Cancelled/Partial 的退出码未能在不扫�
 if ($Scope -eq 'Core') {
     $script:Limitations.Add('Scope=Core 未执行 GUI/Test-SjcGui、完整 SelfTest、EXE、真实回收站或真实桌面观察；不得据此声称本版本已发布验收。')
 }
-if ($KeepSandbox) { $script:Limitations.Add('本次使用 -KeepSandbox：GUID 沙箱保留在 artifacts 之外的生产 StateRoot\Sandboxes 下，需人工确认后清理。') }
+$script:Limitations.Add('全部测试目录无条件保留；只运行 reviewed-core-cases.json 已审查用例。完整Release不筛除N06；其Git操作仅在本轮自有GUID合成仓库。')
 $script:DeclaredExclusions.Add('真实回收站清空（Invoke-SjcRecycle 以测试上下文拒绝；生产调用需 OS 确认）未执行。')
 $script:DeclaredExclusions.Add('DPI/真实窗口视觉观察未由 suite 执行。')
 
@@ -387,7 +400,11 @@ if ($Scope -eq 'Release' -and [string]::IsNullOrWhiteSpace($ExePath)) {
 if ($Scope -eq 'Release' -and -not $guiPresent) {
     $script:Limitations.Add('src/Gui.ps1 未落盘；GUI 与完整 SelfTest 用例将阻塞。')
 }
-if ($KeepSandbox) { $env:SJC_KEEP_SANDBOX = '1' } else { Remove-Item Env:SJC_KEEP_SANDBOX -ErrorAction SilentlyContinue }
+if ($ParseOnly) {
+    $path=Write-Summary -Status 'ParsedOnly' -Results @() -ExitCode 0
+    Write-Output ('PARSE ONLY; no case process started; summary='+$path)
+    exit 0
+}
 
 Write-Output ('SUITE START scope=' + $Scope + ' cases=' + $selected.Count + ' output=' + $OutputDirectory)
 foreach ($item in $selected) {
@@ -402,6 +419,8 @@ foreach ($item in $selected) {
     if ($item.RequiresGui -and -not $guiPresent) { $skipReason = 'src/Gui.ps1 未落盘' }
     if ($item.RequiresExe -and [string]::IsNullOrWhiteSpace($ExePath)) { $skipReason = '未提供 -ExePath' }
     if ($item.RequiresExe -and -not [string]::IsNullOrWhiteSpace($ExePath) -and -not [IO.File]::Exists($ExePath)) { $skipReason = 'EXE 不存在：' + $ExePath }
+    $reviewed=@(([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'cases\reviewed-core-cases.json')) | ConvertFrom-Json).Reviewed)
+    if ($item.Id -notin $reviewed) { $skipReason='未列入已审查清单，禁止启动未经审查的执行链。' }
     if ($skipReason) {
         $blocked = [pscustomobject]@{ Id = $caseId; Name = $item.Name; Status = 'Blocked'; ExitCode = $null; Assertions = 0; Passed = 0; Failed = 0; DurationSeconds = 0; ResultPath = ''; Stdout = ''; Stderr = ''; CoverageGaps = @($skipReason); DeclaredExclusions = @(); Error = $skipReason }
         $results.Add($blocked)
@@ -428,6 +447,10 @@ foreach ($item in $selected) {
     $startInfo.FileName = $script:PowerShellPath; $startInfo.Arguments = $arguments
     $startInfo.UseShellExecute = $false; $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true; $startInfo.RedirectStandardError = $true
+    $caseTemp=Join-Path $evidenceDir 'Temp'
+    [void][IO.Directory]::CreateDirectory($caseTemp)
+    $startInfo.EnvironmentVariables['TEMP']=$caseTemp
+    $startInfo.EnvironmentVariables['TMP']=$caseTemp
     $proc = [Diagnostics.Process]::new(); $proc.StartInfo = $startInfo
     if (-not $proc.Start()) { throw ('无法启动用例：' + $caseId) }
     $null = $proc.Handle

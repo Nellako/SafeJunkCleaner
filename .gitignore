@@ -8,6 +8,7 @@ NN_*/
 artifacts/
 releases/
 deliveries/
+/交付/
 dist/
 coverage/
 temp*/
@@ -27,6 +28,12 @@ temp*/
 .vs/
 settings.json
 preferences-*.json
+
+# Isolated model experiments and .NET intermediates
+__pycache__/
+*.py[cod]
+**/bin/
+**/obj/
 
 # OS/editor metadata
 Thumbs.db

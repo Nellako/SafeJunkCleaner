@@ -30,7 +30,7 @@ try {
     }
     Assert-True 'each profile exposes non-empty Id/Label/Description/Impact strings' ($profileShape.Count -eq 0) ($profileShape -join '; ')
     Assert-Equal 'profile ids are unique' 3 (@($profiles | ForEach-Object { [string]$_.Id } | Select-Object -Unique).Count)
-    Assert-Throws 'unknown profile id is refused by the preset API' { Get-SjcPresetRuleIds -Context (New-SjcContext) -CleaningProfile 'Recommended' } 'Low|Medium|High'
+    Assert-Throws 'unknown profile id is refused by the preset API' { Get-SjcPresetRuleIds -Context (New-SjcRuleInventoryContext) -CleaningProfile 'Recommended' } 'Low|Medium|High'
 
     # ---- 2. Preset containment on the real production rule table --------------
     $production = New-ProductionContextForInventory

@@ -1,0 +1,4 @@
+# Release fingerprints compare exact working bytes with committed blobs. Do not
+# let core.autocrlf silently rewrite those bytes on add/checkout.
+* -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+# UTF-8 BOM is required for PowerShell; Windows CRLF's CR is not whitespace.

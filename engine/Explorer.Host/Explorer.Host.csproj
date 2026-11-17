@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>sjc-explorer</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Explorer.Core\Explorer.Core.csproj" />
+    <ProjectReference Include="..\Explorer.Application\Explorer.Application.csproj" />
+    <Compile Remove="HostModelBridge.cs;PackagedModelBootstrap.cs" />
+  </ItemGroup>
+</Project>

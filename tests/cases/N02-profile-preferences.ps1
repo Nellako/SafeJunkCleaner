@@ -74,7 +74,7 @@ try {
     Assert-Throws 'stored v4 with an unknown field fails loudly' { Read-SjcPreferences -Context $context } '未知字段'
     [IO.File]::WriteAllText($prefPath, '{not-json', $Utf8NoBom)
     Assert-Throws 'corrupt v4 JSON fails loudly' { Read-SjcPreferences -Context $context } ''
-    Remove-Item -LiteralPath $prefPath -Force
+    Register-OwnedTestFile -Path $prefPath; Move-OwnedTestFileToEvidence -Path $prefPath
 
     # 5. v3 migration: Recommended/Deep -> Low, CustomEnabled=false, notice, v3 preserved.
     foreach ($legacyTier in @('Recommended', 'Deep')) {
@@ -89,8 +89,8 @@ try {
         $migratedV4 = Read-SjcPreferences -Context $context
         Assert-Equal ('after ' + $legacyTier + ' migration the v4 file is authoritative') 'Low' ([string]$migratedV4.CleaningProfile)
         Assert-Equal ('after ' + $legacyTier + ' migration no second notice is shown') '' ([string]$migratedV4.MigrationNotice)
-        Remove-Item -LiteralPath $prefPath -Force
-        Remove-Item -LiteralPath $legacyPath -Force
+        Register-OwnedTestFile -Path $prefPath; Move-OwnedTestFileToEvidence -Path $prefPath
+        Register-OwnedTestFile -Path $legacyPath; Move-OwnedTestFileToEvidence -Path $legacyPath
     }
 
     # v3 without the field, and v3 with a frozen-invalid tier.
@@ -98,11 +98,11 @@ try {
     $noTier = Read-SjcPreferences -Context $context
     Assert-Equal 'v3 without a tier still migrates to Low' 'Low' ([string]$noTier.CleaningProfile)
     Assert-True 'v3 without a tier still reports the migration notice' (-not [string]::IsNullOrWhiteSpace([string]$noTier.MigrationNotice)) ''
-    Remove-Item -LiteralPath $prefPath -Force; Remove-Item -LiteralPath $legacyPath -Force
+    Register-OwnedTestFile -Path $prefPath; Move-OwnedTestFileToEvidence -Path $prefPath; Register-OwnedTestFile -Path $legacyPath; Move-OwnedTestFileToEvidence -Path $legacyPath
     [IO.File]::WriteAllText($legacyPath, '{"CleaningProfile":"Max","RecycleMode":false,"SelectedRuleIds":["SandboxOld"]}', $Utf8NoBom)
     Assert-Throws 'v3 with an unknown tier is rejected, not silently defaulted' { Read-SjcPreferences -Context $context } '旧首选项档位无效'
     Assert-True 'a rejected v3 file is left untouched and un-migrated' ([IO.File]::Exists($legacyPath) -and -not [IO.File]::Exists($prefPath)) ''
-    Remove-Item -LiteralPath $legacyPath -Force
+    Register-OwnedTestFile -Path $legacyPath; Move-OwnedTestFileToEvidence -Path $legacyPath
 
     # 6. Reading preferences never changes the sandbox rule table tier or writes elsewhere.
     [void](Save-SjcPreferences -Context $context -Preferences ([pscustomobject]@{ RecycleMode = $true; SelectedRuleIds = @(); CleaningProfile = 'High'; CustomEnabled = $false }))

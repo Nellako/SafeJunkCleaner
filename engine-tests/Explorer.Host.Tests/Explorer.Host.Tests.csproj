@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine\Explorer.Application\Explorer.Application.csproj" />
+    <Compile Include="..\..\engine\Explorer.Host\HostProtocol.cs" Link="Host\HostProtocol.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\ProofHashSession.cs" Link="Host\ProofHashSession.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\SuggestionReasons.cs" Link="Host\SuggestionReasons.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\ExplorerCoordinator.cs" Link="Host\ExplorerCoordinator.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\ApprovalPreparation.cs" Link="Host\ApprovalPreparation.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\SpaceQueryWork.cs" Link="Host\SpaceQueryWork.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\HostInventoryRows.cs" Link="Host\HostInventoryRows.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\HostBuildArtifactProvider.cs" Link="Host\HostBuildArtifactProvider.cs" />
+    <Compile Include="..\..\engine\Explorer.Host\StaExecutionQueue.cs" Link="Host\StaExecutionQueue.cs" />
+  </ItemGroup>
+</Project>

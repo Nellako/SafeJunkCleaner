@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Explorer.Core\Explorer.Core.csproj" />
+    <ProjectReference Include="..\Explorer.Analysis\Explorer.Analysis.csproj" />
+    <ProjectReference Include="..\Explorer.Execution\Explorer.Execution.csproj" />
+  </ItemGroup>
+</Project>

@@ -51,12 +51,15 @@ try {
         $fs = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $fs.WriteByte(65) } finally { $fs.Dispose() }
         [IO.File]::SetLastWriteTimeUtc($path, [datetime]::UtcNow.AddHours(-96))
+        Register-OwnedTestFile -Path $path
     }
     $midTask = New-SjcTaskDirectory -Context $midContext
     $midScan = Invoke-SjcScan -Context $midContext -RuleIds @('SandboxOld') -TaskDirectory $midTask
     Assert-Equal 'mid-run scan seals 1400 candidates' 'Success|1400' ($midScan.Status + '|' + [int64]$midScan.CandidateCount) $midScan.Error
 
     $midCancel = Join-Path $midTask 'cancel.flag'
+    Assert-Throws 'watcher refuses a cancel channel from another owned sandbox' { Start-CancelHelper -Mode RemainingCount -WatchPath $midFiles -CancelPath (Join-Path $task 'foreign.flag') -Threshold 1050 } '状态根'
+    Assert-Throws 'watcher refuses an unowned watch directory' { Start-CancelHelper -Mode RemainingCount -WatchPath $EvidenceDirectory -CancelPath $midCancel -Threshold 1050 } '已登记沙箱'
     $watcher = Start-CancelHelper -Mode RemainingCount -WatchPath $midFiles -CancelPath $midCancel -Threshold 1050 -TimeoutSeconds 120
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $cleanMid = Invoke-SjcClean -Context $midContext -TaskDirectory $midTask -CancelPath $midCancel -RecycleMode $false

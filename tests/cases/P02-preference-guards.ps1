@@ -67,7 +67,7 @@ try {
     [IO.File]::WriteAllText($prefPath, ('{"CleaningProfile":"High","CustomEnabled":false,"RecycleMode":true,"SelectedRuleIds":["' + $staleId + '"]}'), $Utf8NoBom)
     Assert-Throws 'stored v4 with a stale discovered rule id fails loudly' { Read-SjcPreferences -Context $context } '未知或重复规则'
     Assert-True 'a stale v4 file is left untouched for the GUI fallback path' ([IO.File]::Exists($prefPath)) $prefPath
-    Remove-Item -LiteralPath $prefPath -Force
+    Register-OwnedTestFile -Path $prefPath; Move-OwnedTestFileToEvidence -Path $prefPath
 
     # Legacy v2 preferences must never override the v3/v4 selection and must never grant
     # legacy advanced ids. The file is not migrated because its schema is unknown.

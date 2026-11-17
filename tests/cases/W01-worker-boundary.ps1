@@ -78,12 +78,12 @@ try {
     $fakePayload = Join-Path $fakeTaskDir 'payload.json'
     [IO.File]::WriteAllText($fakePayload, '{"TaskDirectory":"' + $fakeTaskDir.Replace('\', '\\') + '","CancelPath":"","ProgressPath":"","RuleIds":["SandboxOld"],"CleaningProfile":"Medium","CustomEnabled":true}', $Utf8NoBom)
     $fakeOutput = Join-Path $fakeTaskDir 'result.json'
-    $workerResult = Invoke-SjcWorker -Mode 'Scan' -PayloadPath $fakePayload -OutputPath $fakeOutput
+    $workerResult = Invoke-SjcWorker -TestContext $context -Mode 'Scan' -PayloadPath $fakePayload -OutputPath $fakeOutput
     Assert-True 'worker rejects a payload outside any trusted task directory' ($workerResult.Status -eq 'Failed') ('status=' + $workerResult.Status + '; error=' + $workerResult.Error)
     Assert-True 'rejection names the ownership/task problem' ([string]$workerResult.Error -match '任务|GUID|状态根') ([string]$workerResult.Error)
     Assert-True 'worker wrote no result JSON into an untrusted directory' (-not [IO.File]::Exists($fakeOutput)) $fakeOutput
 
-    $missingResult = Invoke-SjcWorker -Mode 'Scan' -PayloadPath (Join-Path $sandbox.Root 'missing-payload.json') -OutputPath (Join-Path $sandbox.Root 'out.json')
+    $missingResult = Invoke-SjcWorker -TestContext $context -Mode 'Scan' -PayloadPath (Join-Path $sandbox.Root 'missing-payload.json') -OutputPath (Join-Path $sandbox.Root 'out.json')
     Assert-True 'missing payload file yields Failed, not an exception escape' ($missingResult.Status -eq 'Failed') ([string]$missingResult.Error)
 
     # Recycle: test context is refused and nothing is emptied; status-code matrix is pure.
@@ -116,8 +116,11 @@ try {
     Assert-True 'completed, unleased task is removed' ($removed -eq $true -and -not [IO.Directory]::Exists($lifecycleTask)) ([string]$removed)
     Assert-True 'removal does not touch candidate target files' ([IO.File]::Exists((Join-Path $sandbox.Root 'files\life.tmp'))) ''
 
-    # Keep the SelfTest task's worker-failure logs out of the product's log audit: not ours to delete.
-    Add-Limitation 'W01 的 Invoke-SjcWorker 失败路径会在生产 Logs 写 worker-failure 日志（Worker 按设计使用生产上下文）；未删除该日志。'
+    $retained=@(Get-ChildItem -LiteralPath (Join-Path $context.StateRoot 'RetainedTasks') -Directory)
+    Assert-Equal 'completed test task is retained as one quarantined directory' 1 $retained.Count
+    Assert-True 'retained task keeps its owner and completion records' ([IO.File]::Exists((Join-Path $retained[0].FullName '.task-owner')) -and [IO.File]::Exists((Join-Path $retained[0].FullName 'task.completed')))
+    Assert-Equal 'retained task has a durable pre-move manifest' 1 (@(Get-ChildItem -LiteralPath (Join-Path $context.StateRoot 'RetainedTasks') -File -Filter '*.manifest.json').Count)
+    Add-Limitation 'W01 通过现有 TestContext 调用 Worker；失败日志只写本轮沙箱。测试任务通过相同完成/租约闸门后整目录隔离保留，未删除目录；生产移除分支未执行。'
 }
 catch {
     Assert-True ('case completed without unhandled exception: ' + $_.Exception.Message) $false $_.ScriptStackTrace

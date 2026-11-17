@@ -1,0 +1,4 @@
+<Project>
+  <Import Project="..\engine\Directory.Build.props" />
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Explorer.SelfTest'"><Compile Include="$(MSBuildThisFileDirectory)TestEvidence.cs" Link="TestEvidence.cs" /></ItemGroup>
+</Project>

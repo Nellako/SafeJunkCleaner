@@ -72,6 +72,7 @@ try {
         }
     }
     $signatureFunctionInstalled = $true
+    if ((Get-Command Get-AuthenticodeSignature).CommandType -ne 'Function' -or (Get-Command Get-AuthenticodeSignature).Definition -notmatch 'mock-signature-mode-not-set') { throw '签名替身安装失败；禁止继续。' }
     Assert-True 'the signature probe is a test double, not the real cmdlet' ((Get-Command Get-AuthenticodeSignature).CommandType -eq 'Function') ([string](Get-Command Get-AuthenticodeSignature).CommandType)
 
     $dismBefore = @([Diagnostics.Process]::GetProcessesByName('dism')).Count
@@ -133,6 +134,7 @@ try {
     Assert-True 'TestMode refuses to start system maintenance' ($null -ne $testModeError -and $testModeError.Exception.Message -match 'TestMode') ([string]$testModeError.Exception.Message)
     Assert-Equal 'TestMode never reaches the process-start function' 0 ($script:n11StartCalls.Count - $beforeStart) ([string]($script:n11StartCalls.Count - $beforeStart))
 
+    if ((Get-Command Invoke-SjcMaintenanceProcessStart).Definition -notmatch 'mock-start-failure') { throw '维护启动替身安装失败；禁止继续。' }
     $running = Start-SjcMaintenance -ActionId 'ComponentCleanup'
     Assert-Equal 'Running result status is Running' 'Running' ([string]$running.Status) ([string]$running.Status)
     Assert-True 'Running result carries the started process handle' ([object]::ReferenceEquals($running.Process, $script:n11FakeProcess)) 'process reference'

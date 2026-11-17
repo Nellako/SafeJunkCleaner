@@ -23,12 +23,17 @@ function Assert-SjcWorkerPayload {
     }
 }
 function Invoke-SjcSelfTest {
-    param()
+    param([string]$SandboxParentDirectory='')
     $checks=New-Object 'System.Collections.Generic.List[object]'
     $errors=New-Object 'System.Collections.Generic.List[string]'
     $sandbox=$null; $scan=$null; $clean=$null; $gui=$null
     try {
-        $sandbox=New-SjcTestSandbox
+        if ([string]::IsNullOrWhiteSpace($SandboxParentDirectory)) {
+            if (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) { $SandboxParentDirectory=$script:SjcTestIsolationParent }
+            else { $SandboxParentDirectory=Join-Path ([IO.Path]::GetTempPath()) ('SafeJunkCleaner-SelfTest-' + [guid]::NewGuid().ToString('D')) }
+        }
+        Enable-SjcTestIsolation -ParentDirectory $SandboxParentDirectory
+        $sandbox=New-SjcTestSandbox -ParentDirectory $SandboxParentDirectory
         $files=Join-Path $sandbox.Root 'files'
         $old=Join-Path $files 'owned-old.tmp'; $new=Join-Path $files 'owned-new.tmp'; $keep=Join-Path $files 'owned-kept.tmp'
         foreach($path in @($old,$new,$keep)) { Write-SjcAtomicText -Path $path -Text 'SafeJunkCleaner GUID synthetic file only' -NoOverwrite }
@@ -70,12 +75,21 @@ function Invoke-SjcSelfTest {
     return $result
 }
 function Invoke-SjcWorker {
-    param([ValidateSet('Scan','Clean','Recycle','SelfTest')][string]$Mode,[string]$PayloadPath,[string]$OutputPath)
+    param([ValidateSet('Scan','Clean','Recycle','SelfTest')][string]$Mode,[string]$PayloadPath,[string]$OutputPath,[string]$SelfTestParentDirectory='', $TestContext=$null)
     $result=$null; $safeOutput=''; $context=$null; $workerLease=$null; $task=''
     try {
     try {
         # Never deserialize a Context, TestRoot or rule Root supplied by a caller.
-        $context=New-SjcContext
+        if ($SelfTestParentDirectory) {
+            if ($Mode -ne 'SelfTest' -or $PayloadPath -or $OutputPath -or $null -ne $TestContext) { throw '隔离 SelfTest 仅允许无载荷/无外部结果通道的 SelfTest。' }
+            Enable-SjcTestIsolation -ParentDirectory $SelfTestParentDirectory
+            return (Invoke-SjcSelfTest -SandboxParentDirectory $SelfTestParentDirectory)
+        }
+        if ($null -ne $TestContext) {
+            $testConfiguration=Get-SjcContextConfiguration $TestContext
+            if (-not $testConfiguration.IsTest) { throw 'TestContext 必须是本进程已注册测试上下文。' }
+            $context=$TestContext
+        } elseif ($Mode -ne 'SelfTest' -or $PayloadPath -or $OutputPath) { $context=New-SjcContext }
         if ($Mode -eq 'SelfTest' -and [string]::IsNullOrWhiteSpace($PayloadPath)) {
             if ($OutputPath) {
                 $out=Get-SjcFullPath $OutputPath

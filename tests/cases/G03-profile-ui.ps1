@@ -3,8 +3,8 @@
 # The WPF surface exposes a profile radio selector (Low/Medium/High) plus a single
 # "AdvancedButton" that opens a modal advanced-rule draft window. There is no inline
 # advanced toggle/panel: this case asserts that contract and drives the REAL
-# New-SjcGuiAdvancedDraftWindow / Confirm-SjcGuiAdvancedDraft functions on an
-# unshown (never ShowDialog) window - no mouse, no UI automation.
+# New-SjcGuiAdvancedDraftWindow / Confirm-SjcGuiAdvancedDraft functions, plus
+# bounded real ShowDialog cancellation on owned offscreen windows.
 # Contract covered: advanced draft closed by default, cancel keeps scan, same-set
 # confirm keeps scan, changed-set confirm sets explicit CustomEnabled and invalidates
 # (needs rescan), three-tier instant apply, Busy freeze, strict worker payload.
@@ -32,6 +32,7 @@ try {
     # --- contract: current popup GUI exposes AdvancedButton, never AdvancedToggle ---
     Assert-True 'main window exposes AdvancedButton (no inline toggle)' ($app.Ui.ContainsKey('AdvancedButton') -and -not $app.Ui.ContainsKey('AdvancedToggle'))
     Assert-True 'no inline advanced panel in main window' (-not $app.Ui.ContainsKey('AdvancedPanel'))
+    Assert-True 'deep explore tooltip states modelless heuristic read-only inspection without legacy model wording' ([string]$app.Ui.DeepExploreButton.ToolTip -match '无模型启发式' -and [string]$app.Ui.DeepExploreButton.ToolTip -notmatch '本地小模型|可选辅助') ([string]$app.Ui.DeepExploreButton.ToolTip)
     Assert-Equal 'new user defaults to Medium' 'Medium' $state.Profile
     Assert-True 'advanced draft starts closed' (-not $state.CustomEnabled)
     foreach($name in @('NavHome','NavFiles','NavRules','NavLogs','ApplyRulesButton')) { Assert-True ($name+' removed') ($null -eq $app.Ui.Window.FindName($name)) }
@@ -74,9 +75,60 @@ try {
     $cancelButton=$draftWindow.FindName('DraftCancel')
     Assert-True 'cancel affordance is a real IsCancel dialog button' ($null -ne $cancelButton -and [bool]$cancelButton.IsCancel)
     Assert-True 'cancel does not accept the draft' (-not [bool]$draftWindow.Tag.Accepted)
+    Assert-True 'draft initializes explicit false AuthorizationChanged under StrictMode' ($draftWindow.Tag.ContainsKey('AuthorizationChanged') -and -not [bool]$draftWindow.Tag.AuthorizationChanged)
     Close-DraftWindow $draftWindow;$draftWindow=$null
     Assert-True 'cancel keeps scan valid' ($null -ne $state.Scan -and -not $state.Stale -and $state.Scan.PlanPath -ceq $beforeScan)
     Assert-True 'cancel keeps custom disabled' (-not $state.CustomEnabled)
+
+    # --- REAL Show-SjcGuiAdvancedDraft ShowDialog cancel/Escape/maintenance/auth-change paths (offscreen, no focus steal) ---
+    $app.Ui.Window.WindowStartupLocation='Manual';$app.Ui.Window.Left=-32000;$app.Ui.Window.Top=-32000;$app.Ui.Window.ShowActivated=$false
+    [void]([Windows.Interop.WindowInteropHelper]::new($app.Ui.Window)).EnsureHandle()
+    foreach($cancelMode in @('EscapeCancel','SubWindowClose','AuthChangedClose')){
+        $modalTimer=[Windows.Threading.DispatcherTimer]::new();$modalTimer.Interval=[timespan]::FromMilliseconds(40)
+        $modalState=@{Mode=$cancelMode;Handled=$false;Closed=$false;TimedOut=$false;Error='';Deadline=[datetime]::UtcNow.AddSeconds(5)}
+        $modalTimer.Add_Tick({
+            if([datetime]::UtcNow -gt $modalState.Deadline){
+                $modalState.TimedOut=$true
+                $modalTimer.Stop()
+                foreach($w0 in @($app.Ui.Window.OwnedWindows)){if($w0){try{$w0.Close()}catch{}}}
+                return
+            }
+            if($modalState.Handled){return}
+            $openDraft=@($app.Ui.Window.OwnedWindows | Where-Object { $_ -and $_.Title -eq '高级自定义规则' -and $_.IsLoaded })
+            if($openDraft.Count -eq 0){return}
+            $modalState.Handled=$true
+            $dw0=$openDraft[0]
+            try{
+                if($modalState.Mode -eq 'EscapeCancel'){
+                    $cancelBtn=$dw0.FindName('DraftCancel')
+                    # Routed Click alone skips the real Button.OnClick IsCancel behavior.
+                    $onClick=[Windows.Controls.Button].GetMethod('OnClick',[Reflection.BindingFlags]'Instance,NonPublic',$null,[Type[]]@(),$null)
+                    [void]$onClick.Invoke($cancelBtn,$null)
+                }elseif($modalState.Mode -eq 'SubWindowClose'){
+                    $mw=New-SjcGuiMaintenanceWindow $dw0.Tag;$mw.Close()
+                    $dw0.Close()
+                }else{
+                    $dw0.Tag.AuthorizationChanged=$true
+                    $dw0.Close()
+                }
+                $modalState.Closed=(-not $dw0.IsVisible)
+                if($modalState.Closed){$modalTimer.Stop()}
+            }catch{
+                $modalState.Error=$_.Exception.Message
+                try{$dw0.Close()}catch{}
+                $modalTimer.Stop()
+            }
+        }.GetNewClosure())
+        $modalTimer.Start()
+        try { Show-SjcGuiAdvancedDraft $app } finally { $modalTimer.Stop() }
+        Assert-True ('real modal '+$cancelMode+' closes by expected action before watchdog') ($modalState.Handled -and $modalState.Closed -and -not $modalState.TimedOut -and -not $modalState.Error) ([string]$modalState.Error)
+        if($cancelMode -ne 'AuthChangedClose'){
+            Assert-Equal ('Show-SjcGuiAdvancedDraft '+$cancelMode+' sets clean cancel status without missing-property error') '已关闭高级自定义草稿，范围未改变。' ([string]$state.Status) ([string]$state.Status)
+            Assert-True ('Show-SjcGuiAdvancedDraft '+$cancelMode+' preserves scan and preset') ($null -ne $state.Scan -and -not $state.Stale -and -not $state.CustomEnabled -and $state.Scan.PlanPath -ceq $beforeScan)
+        }else{
+            Assert-Equal 'Show-SjcGuiAdvancedDraft AuthChangedClose reports authorization change' '授权已变化，请重新打开高级规则并重新扫描。' ([string]$state.Status) ([string]$state.Status)
+        }
+    }
 
     # --- CONFIRM with UNCHANGED set returns false and keeps the sealed scan ---
     $sameDraft=New-ClosedDraft $app

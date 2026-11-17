@@ -52,7 +52,9 @@ try {
     Assert-Equal 'completing a log overwrites Running with the real status' 'Failed' (((Get-Content -LiteralPath $secondLog -Raw -Encoding UTF8) | ConvertFrom-Json).Status)
 
     # A result whose LogPath cannot be written must be surfaced as Failed, not Success.
-    $result = [pscustomobject]@{ Status = 'Success'; Error = ''; LogPath = 'C:\this\path\does\not\exist\log.json' }
+    $missingLogParent=Join-Path $sandbox.Root ('missing-log-parent-'+[guid]::NewGuid().ToString('N'))
+    if (Test-Path -LiteralPath $missingLogParent) { throw '人工不存在日志目录意外已存在。' }
+    $result = [pscustomobject]@{ Status = 'Success'; Error = ''; LogPath = (Join-Path $missingLogParent 'log.json') }
     Complete-SjcOperationLog -Result $result
     Assert-Equal 'unwritable log downgrades the result to Failed' 'Failed' ([string]$result.Status)
     Assert-True 'unwritable log records a failure reason' (-not [string]::IsNullOrWhiteSpace([string]$result.Error)) ([string]$result.Error)
@@ -67,7 +69,7 @@ try {
     $scanNoLog = Invoke-SjcScan -Context $noLogContext -RuleIds @('SandboxOld') -TaskDirectory $noLogTask
     # Block the log directory by placing a file where the Logs directory must be.
     $logDir = Join-Path $noLogContext.StateRoot 'Logs'
-    Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction SilentlyContinue
+    [void](Move-OwnedTestDirectoryToEvidence -Path $logDir)
     [IO.File]::WriteAllText($logDir, 'not-a-directory', $Utf8NoBom)
     $blocked = Invoke-SjcClean -Context $noLogContext -TaskDirectory $noLogTask -RecycleMode $false
     Assert-Equal 'clean without a creatable log is Failed' 'Failed' ([string]$blocked.Status) ([string]$blocked.Error)

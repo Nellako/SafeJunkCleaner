@@ -25,7 +25,8 @@ try {
     Assert-Throws 'cancelled session creation rejects' { Open-SjcPreviewSession -PlanPath $scan.PlanPath -CancellationToken $cancelSource.Token } ''
     $cancelSource.Dispose()
     Assert-Throws 'locked plan cannot be appended' { [IO.File]::AppendAllText($scan.PlanPath,'tampered') } ''
-    Assert-Throws 'locked plan cannot be replaced' { [IO.File]::Delete($scan.PlanPath) } ''
+    Register-OwnedTestFile -Path $scan.PlanPath
+    Assert-Throws 'locked plan cannot be replaced' { Move-OwnedTestFileToEvidence -Path $scan.PlanPath } ''
     $clean=Invoke-SjcClean -Context $sandbox.Context -TaskDirectory $task -ExcludedIds @($page1[0].Id) -RecycleMode $false
     Assert-Equal 'clean independently revalidates while read lock held' 'Success' $clean.Status $clean.Error
     Assert-Equal 'clean deletes only approved nonexcluded' 449 $clean.Deleted

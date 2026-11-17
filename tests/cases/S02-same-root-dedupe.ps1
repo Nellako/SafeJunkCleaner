@@ -56,7 +56,8 @@ try {
     $script:ruleOverrideApplied = $true
 
     $task = New-SjcTaskDirectory -Context $context
-    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -CustomEnabled $true
+    $progressPath=Join-Path $task 'progress.json'
+    $scan = Invoke-SjcScan -Context $context -RuleIds @('SandboxOld', 'SandboxLog') -TaskDirectory $task -ProgressPath $progressPath -CustomEnabled $true
     $script:ruleOverrideApplied = $false
     [void](Save-Evidence 'overlap-scan' $scan)
 
@@ -66,6 +67,8 @@ try {
     $names = @($candidates | ForEach-Object { [IO.Path]::GetFileName([string]$_.Path) } | Sort-Object)
     Assert-Equal 'each physical file is a candidate exactly once despite two matching rules' $paths.Count (@($paths | Select-Object -Unique).Count)
     Assert-Equal 'CandidateCount equals the unique file count' $paths.Count ([int64]$scan.CandidateCount)
+    $overlapProgress=Read-SjcSafeText $progressPath | ConvertFrom-Json
+    Assert-Equal 'shared-root inspection count is eight files, not multiplied by two matching rules' 8 ([int64]$overlapProgress.Reviewed)
     Assert-Equal 'only old regular non-WAL/SHM files qualify' 'overlap-a.tmp|overlap-b.tmp|plain.tmp' ($names -join '|')
     Assert-True 'WAL/SHM names are rejected even when a rule pattern is *' (@($names | Where-Object { $_ -match '(?i)(-wal|-shm|\.wal|\.shm)$' }).Count -eq 0) ($names -join ',')
     Assert-True 'every overlap candidate is attributed to exactly one rule' (@($candidates | Where-Object { $_.RuleId -notin @('SandboxOld', 'SandboxLog') }).Count -eq 0) ''

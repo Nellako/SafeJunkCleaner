@@ -39,9 +39,37 @@ try {
     Assert-True 'sealed plan is candidates.jsonl' ([IO.Path]::GetFileName($planPath) -eq 'candidates.jsonl') $planPath
 
     if ($guiReady) {
+        # Real WPF controls driven by a synthetic in-process task; no production Worker.
+        $feedbackState=New-SjcGuiState $context -TestMode
+        $feedbackApp=New-SjcGuiApp $feedbackState
+        $feedbackApp.Timer.Stop()
+        try {
+            $feedbackState.Task=@{Action='Scan';CancelRequested=$false};$feedbackState.Busy=$true
+            $feedbackState.ScanClock=[Diagnostics.Stopwatch]::StartNew()
+            $feedbackState.ScanFeedback=@{Reviewed=[int64]123;CandidateCount=[int64]7;CancelRequested=$false}
+            Update-SjcGuiView $feedbackApp
+            $feedbackText=$feedbackApp.Ui.ScanFeedbackText.Text
+            Assert-True 'real scan feedback separates checked files and candidates' ($feedbackText -match '123' -and $feedbackText -match '7' -and $feedbackText -match '未删除') $feedbackText
+            Assert-Equal 'active scan feedback is visible' 'Visible' ([string]$feedbackApp.Ui.ScanFeedbackText.Visibility)
+            Assert-True 'active scan summary never contradicts progress as not started' ($feedbackApp.Ui.PendingText.Text -match '扫描' -and $feedbackApp.Ui.PendingText.Text -notmatch '尚未扫描') $feedbackApp.Ui.PendingText.Text
+            Assert-True 'unknown scan total is not rendered as a percentage' ($feedbackText -notmatch '%') $feedbackText
+            $feedbackState.ScanFeedback=@{Reviewed=$null;CandidateCount=$null;CancelRequested=$false}
+            Update-SjcGuiView $feedbackApp
+            Assert-True 'no received progress is not shown as measured zero' ($feedbackApp.Ui.ScanFeedbackText.Text -match '尚未收到') $feedbackApp.Ui.ScanFeedbackText.Text
+            $feedbackState.Task.Action='Clean'
+            Update-SjcGuiView $feedbackApp
+            Assert-Equal 'cleaning never reuses scan counters' 'Collapsed' ([string]$feedbackApp.Ui.ScanFeedbackText.Visibility)
+            $feedbackState.Task.Action='Scan';$feedbackState.Task.CancelRequested=$true
+            Update-SjcGuiView $feedbackApp
+            Assert-True 'cancel request keeps pending-result feedback' ($feedbackApp.Ui.ScanFeedbackText.Text -match '取消') $feedbackApp.Ui.ScanFeedbackText.Text
+            $feedbackState.Task=$null;$feedbackState.Busy=$false
+            $feedbackState.ScanClock.Stop();Update-SjcGuiView $feedbackApp
+            Assert-Equal 'completed or unknown task leaves no stale scan counters' 'Collapsed' ([string]$feedbackApp.Ui.ScanFeedbackText.Visibility)
+        } finally { $feedbackState.Task=$null;$feedbackState.Busy=$false;Remove-SjcGuiApp $feedbackApp;$feedbackApp.Ui.Window.Close() }
+
         $stateRoot = Get-SjcProductionStateRoot
         $entriesBefore = @(Get-ReleaseStateRootEntries $stateRoot)
-        $preferenceBefore = Get-FileSha256 (Join-Path $stateRoot 'preferences-v3.json')
+        $preferenceBefore = Get-FileSha256 (Join-Path $stateRoot 'preferences-v4.json')
         $shotDirectory = Join-Path $EvidenceDirectory 'gui-shots'
 
         $sw = [Diagnostics.Stopwatch]::StartNew()

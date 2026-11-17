@@ -23,11 +23,11 @@ if ($source.Head -ceq $target.Head) {
 }
 if (-not $EvidencePath) { throw 'Commit-bound evidence is required; seal existing acceptance first.' }
 $evidenceHash = Test-LpEnvelope $source $EvidencePath $MaxEvidenceAgeHours
-$isolation = New-LpIsolation
+$isolation = New-LpIsolation (Split-Path -Parent (Get-LpPath $EvidencePath))
 try {
     Assert-LpAncestor $isolation $source $target
     Assert-LpIgnoredConflicts $source $target
-    $plan = [pscustomobject]@{Status='Ready';Source=$source;Target=$target;EvidenceSHA256=$evidenceHash;Executed=$false}
+    $plan = [pscustomobject]@{Status='Ready';Source=$source;Target=$target;EvidenceSHA256=$evidenceHash;Executed=$false;IsolationDirectory=$isolation;IsolationRetained=$true}
     if (-not $Execute) { $plan; return }
     if (-not $PSCmdlet.ShouldProcess($target.Path, "Fast-forward main $($target.Head) -> $($source.Head) from local develop")) {
         $plan.Status='NotExecuted'; $plan; return
@@ -54,7 +54,4 @@ try {
     $plan.Status='FastForwarded'; $plan.Target=$after; $plan.Executed=$true; $plan
 } catch {
     throw "Promotion stopped. No rollback was attempted; inspect target HEAD/worktree and object store before retrying. $($_.Exception.Message)"
-} finally {
-    # 只删除本次创建的 GUID 隔离目录；不清理任何项目目录。
-    if ($isolation -and [IO.Directory]::Exists($isolation)) { Remove-Item -LiteralPath $isolation -Recurse -Force -WhatIf:$false -Confirm:$false }
 }

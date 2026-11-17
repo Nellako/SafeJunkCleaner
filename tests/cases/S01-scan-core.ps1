@@ -90,14 +90,39 @@ try {
         $pNames = @($progressObj.PSObject.Properties.Name | Sort-Object)
         Assert-Equal 'progress has Text/Reviewed/CandidateCount/UpdatedUtc' 'CandidateCount,Reviewed,Text,UpdatedUtc' ($pNames -join ',')
         Assert-True 'progress CandidateCount is the final candidate count' ([int64]$progressObj.CandidateCount -eq [int64]$scan.CandidateCount) ([string]$progressObj.CandidateCount)
+        Assert-Equal 'progress counts all eight inspected regular files, not only three candidates' 8 ([int64]$progressObj.Reviewed)
     }
+
+    # Observe real progress-file writes from a real scan. Delay the initial notification
+    # once to cross the 250ms throttle deterministically, not to claim scan performance.
+    $liveSandbox = New-OwnedSandbox
+    for ($i=0; $i -lt 12; $i++) { New-TestFile -Path (Join-Path $liveSandbox.Root ('files\live-{0:D2}.tmp' -f $i)) -Bytes 10 -AgeHours 100 | Out-Null }
+    $liveTask = New-SjcTaskDirectory $liveSandbox.Context
+    $script:S01OriginalProgress = ${function:Write-SjcProgress}
+    $script:S01ProgressSamples = [Collections.Generic.List[object]]::new()
+    $script:S01ProgressDelay = $true
+    function Write-SjcProgress {
+        param([string]$Path,[string]$Text,[int64]$Reviewed,[int64]$CandidateCount,$Clock,[switch]$Force)
+        & $script:S01OriginalProgress -Path $Path -Text $Text -Reviewed $Reviewed -CandidateCount $CandidateCount -Clock $Clock -Force:$Force
+        if ($Path -and [IO.File]::Exists($Path)) { [void]$script:S01ProgressSamples.Add((Read-SjcSafeText $Path | ConvertFrom-Json)) }
+        if ($script:S01ProgressDelay) { $script:S01ProgressDelay=$false; Start-Sleep -Milliseconds 300 }
+    }
+    try {
+        $liveScan = Invoke-SjcScan -Context $liveSandbox.Context -RuleIds @('SandboxOld') -TaskDirectory $liveTask -ProgressPath (Join-Path $liveTask 'progress.json')
+    } finally { Set-Item -Path 'Function:\Write-SjcProgress' -Value $script:S01OriginalProgress }
+    Assert-Equal 'live scan still completes normally' 'Success' $liveScan.Status $liveScan.Error
+    $samples = @($script:S01ProgressSamples | Sort-Object UpdatedUtc -Unique)
+    Assert-True 'actual persisted progress includes positive in-flight checks before completion' (@($samples | Where-Object { [int64]$_.Reviewed -gt 0 -and [int64]$_.Reviewed -lt 12 -and $_.Text -ne '扫描结束' }).Count -gt 0)
+    Assert-True 'live progress never claims more candidates than checked files' (@($samples | Where-Object { [int64]$_.CandidateCount -gt [int64]$_.Reviewed }).Count -eq 0)
+    Assert-Equal 'last live progress checks all files' 12 ([int64]$samples[-1].Reviewed)
+    [void](Save-Evidence 'live-scan-progress' $samples)
 
     Assert-True 'scan log path exists and is unique-shaped' ($scan.LogPath -and [IO.File]::Exists($scan.LogPath) -and ([IO.Path]::GetFileName($scan.LogPath) -match '^scan-[0-9a-f-]{36}\.json$')) ([string]$scan.LogPath)
 
     # Missing root and channel misuse must be distinct states, never silent zero.
     $emptySandbox = New-OwnedSandbox
     $emptyContext = $emptySandbox.Context
-    [void][IO.Directory]::Delete((Join-Path $emptySandbox.Root 'files'), $false)
+    [void](Move-OwnedTestDirectoryToEvidence -Path (Join-Path $emptySandbox.Root 'files'))
     $emptyTask = New-SjcTaskDirectory -Context $emptyContext
     $missing = Invoke-SjcScan -Context $emptyContext -RuleIds @('SandboxOld') -TaskDirectory $emptyTask -CustomEnabled $true
     $missingCategories = @($missing.Categories)

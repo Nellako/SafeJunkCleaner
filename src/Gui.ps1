@@ -34,7 +34,7 @@ function Get-SjcGuiGlyphMap {
         Scan='E721';Clean='E74D';Cancel='E711';EmptyRecycle='E74D';Previous='E76B';Next='E76C'
         Keep='E72E';Unkeep='E785';Copy='E8C8';Export='EDE1';CheckPage='E73A';ClearSelection='E8E6'
         OpenLog='E8E5';Details='E946';RemoveRecord='E74D';Logs='E81C';Settings='E713';Reset='E72C'
-        ChevronDown='E70D';ChevronUp='E70E';Warning='E7BA';Shield='EA18';Files='E8A5'
+        ChevronDown='E70D';ChevronUp='E70E';Warning='E7BA';Shield='EA18';Files='E8A5';Explore='E721'
     }
 }
 function Get-SjcGuiGlyph {
@@ -139,6 +139,7 @@ $xaml=@'
     <Border x:Name="NoticeBar" Visibility="Collapsed" Background="#FFF6E8" BorderBrush="#F3D9B1" BorderThickness="1" CornerRadius="6" Padding="10,5" Margin="0,0,0,8"><DockPanel><Button x:Name="DismissNoticeButton" DockPanel.Dock="Right" Style="{StaticResource LinkButton}"><TextBlock Text="知道了"/></Button><TextBlock DockPanel.Dock="Left" Text="{G:Warning}" Style="{StaticResource Glyph}" FontSize="12" Foreground="#B4630A" Margin="0,0,6,0"/><TextBlock x:Name="NoticeText" Foreground="#7A4A06" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/></DockPanel></Border>
     <DockPanel>
      <Button x:Name="AdvancedButton" DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Margin="0" VerticalAlignment="Center"><StackPanel Orientation="Horizontal"><TextBlock Text="{G:Settings}" Style="{StaticResource Glyph}" FontSize="12" Margin="0,0,5,0"/><TextBlock x:Name="AdvancedButtonText" Text="高级自定义…"/></StackPanel></Button>
+     <Button x:Name="DeepExploreButton" DockPanel.Dock="Right" Style="{StaticResource SmallButton}" Margin="0,0,8,0" VerticalAlignment="Center" ToolTip="先只读盘点并按无模型启发式检查建议（不加载模型）；只有经你在复核清单中两步明确确认，才会把精确列出的文件移入回收站（不是永久删除）。"><StackPanel Orientation="Horizontal"><TextBlock Text="{G:Explore}" Style="{StaticResource Glyph}" FontSize="12" Margin="0,0,5,0"/><TextBlock Text="深度探索…"/></StackPanel></Button>
      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
       <TextBlock Text="清理强度" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,14,0"/>
       <RadioButton x:Name="ProfileLow" GroupName="CleaningProfile" Content="低" AutomationProperties.Name="低强度"/>
@@ -252,7 +253,7 @@ $xaml=@'
     </Grid>
    </DockPanel>
   </Border>
-  <Border Grid.Row="4" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="16,6"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="StatusText" Text="就绪。先扫描预览，不自动删除文件。" Foreground="#6B7890" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/><ProgressBar x:Name="BusyProgress" Grid.Column="1" Width="100" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="12,0,0,0"/><Button x:Name="LogsToggle" Grid.Column="2" Style="{StaticResource LinkButton}" Margin="12,0,0,0"><StackPanel Orientation="Horizontal"><TextBlock Text="{G:Logs}" Style="{StaticResource Glyph}" FontSize="12" Margin="0,0,4,0"/><TextBlock x:Name="LogsToggleText" Text="任务记录"/></StackPanel></Button></Grid></Border>
+  <Border Grid.Row="4" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="16,6"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock x:Name="StatusText" Text="就绪。先扫描预览，不自动删除文件。" Foreground="#6B7890" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/><TextBlock x:Name="ScanFeedbackText" Visibility="Collapsed" Foreground="#1C3F9E" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Margin="0,2,12,0" AutomationProperties.Name="扫描实时反馈"/></StackPanel><ProgressBar x:Name="BusyProgress" Grid.Column="1" Width="100" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="12,0,0,0"/><Button x:Name="LogsToggle" Grid.Column="2" Style="{StaticResource LinkButton}" Margin="12,0,0,0"><StackPanel Orientation="Horizontal"><TextBlock Text="{G:Logs}" Style="{StaticResource Glyph}" FontSize="12" Margin="0,0,4,0"/><TextBlock x:Name="LogsToggleText" Text="任务记录"/></StackPanel></Button></Grid></Border>
  </Grid>
 </Window>
 '@
@@ -306,7 +307,7 @@ function New-SjcGuiState {
     $selected=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach($id in @(Get-SjcGuiPresetIds $Context $profile)){[void]$selected.Add($id)}
     $custom=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    return @{Context=$Context;Rules=$rules;RuleMap=$ruleMap;Selected=$selected;Profile=$profile;CustomEnabled=$false;CustomSelected=$custom;CustomInitialized=$false;RuleRows=@();RecycleMode=$true;Scan=$null;ScanProfile='';ScanCustomEnabled=$false;ScanRuleIds=@();TaskDirectory='';Stale=$true;Excluded=@{};ExcludedRule=@{};CandidateSelection=@{};PageOffset=0;PageSize=200;PageItems=@();History=(New-Object 'System.Collections.Generic.List[object]');Task=$null;LocalJob=$null;Background=$null;FilesExpanded=$false;LogsExpanded=$false;TestMode=[bool]$TestMode;Busy=$false;Status='就绪。先扫描预览,不自动删除文件。';Notice='';LastResult=$null;Closing=$false;PendingScan=$false;PendingScope=$null;ProfileSupported=(Test-SjcGuiProfileSupport);Icon=$null}
+    return @{Context=$Context;Rules=$rules;RuleMap=$ruleMap;Selected=$selected;Profile=$profile;CustomEnabled=$false;CustomSelected=$custom;CustomInitialized=$false;RuleRows=@();RecycleMode=$true;Scan=$null;ScanProfile='';ScanCustomEnabled=$false;ScanRuleIds=@();TaskDirectory='';Stale=$true;Excluded=@{};ExcludedRule=@{};CandidateSelection=@{};PageOffset=0;PageSize=200;PageItems=@();History=(New-Object 'System.Collections.Generic.List[object]');Task=$null;LocalJob=$null;Background=$null;FilesExpanded=$false;LogsExpanded=$false;TestMode=[bool]$TestMode;Busy=$false;Status='就绪。先扫描预览,不自动删除文件。';Notice='';LastResult=$null;Closing=$false;PendingScan=$false;PendingScope=$null;ProfileSupported=(Test-SjcGuiProfileSupport);Icon=$null;ScanFeedback=$null;ScanClock=$null}
 }
 function Test-SjcGuiPreviewOpen {
     param($State)
@@ -438,6 +439,7 @@ function Update-SjcGuiProfile {
     if(-not $u.ProfileHint){return}
     $idle=-not $s.Busy -and -not $s.PendingScope
     foreach($name in @('ProfileLow','ProfileMedium','ProfileHigh','AdvancedButton')){$u[$name].IsEnabled=($idle -and $s.ProfileSupported)}
+    if($u.DeepExploreButton){$u.DeepExploreButton.IsEnabled=$idle}
     if(-not $s.ProfileSupported){$u.ProfileHint.Text='当前引擎未提供三档强度接口，无法扫描。';$u.ProfileImpact.Text='';$u.ProfileImpactPanel.Visibility='Collapsed';return}
     $info=Get-SjcGuiProfileInfo $s.Profile
     $prefix=if($s.CustomEnabled){'高级自定义（基于'+$info.Label+'）：'+$s.Selected.Count+' 条规则，仅本次会话有效；点击低/中/高恢复预设。'}else{$info.Label+'：'+$info.Description}
@@ -531,7 +533,7 @@ function New-SjcGuiApp {
     $State.Icon=Get-SjcGuiAppIcon
     if($State.Icon.Window){$window.Icon=$State.Icon.Window}
     if($State.Icon.Brand){$ui.BrandIcon.Source=$State.Icon.Brand}
-    $accessible=@{ScanButton='开始扫描';CleanButton='清理未保留候选';CancelButton='取消任务';EmptyRecycleButton='清空回收站';FilesButton='查看文件明细';AdvancedButton='高级自定义规则';PartialReasonButton='查看扫描不完整原因';LogsToggle='任务记录';DismissNoticeButton='关闭提示';KeepRuleButton='保留所选分类';RestoreRuleButton='取消保留所选分类';KeepButton='保留已勾选';RestoreButton='取消保留已勾选';SelectPageButton='勾选本页';ClearSelectionButton='清除勾选';CopyPathButton='复制路径';ExportButton='完整导出 CSV';PreviousButton='上一页';NextButton='下一页';OpenLogButton='打开日志';DetailsButton='任务详情';RemovePreviewButton='移除旧预览记录'}
+    $accessible=@{ScanButton='开始扫描';CleanButton='清理未保留候选';CancelButton='取消任务';EmptyRecycleButton='清空回收站';FilesButton='查看文件明细';AdvancedButton='高级自定义规则';DeepExploreButton='深度探索：盘点、建议与回收站复核';PartialReasonButton='查看扫描不完整原因';LogsToggle='任务记录';DismissNoticeButton='关闭提示';KeepRuleButton='保留所选分类';RestoreRuleButton='取消保留所选分类';KeepButton='保留已勾选';RestoreButton='取消保留已勾选';SelectPageButton='勾选本页';ClearSelectionButton='清除勾选';CopyPathButton='复制路径';ExportButton='完整导出 CSV';PreviousButton='上一页';NextButton='下一页';OpenLogButton='打开日志';DetailsButton='任务详情';RemovePreviewButton='移除旧预览记录'}
     foreach($name in @($accessible.Keys)){
         $ui[$name].Tag=@{App=$app;Name=$name}
         [Windows.Automation.AutomationProperties]::SetName($ui[$name],$accessible[$name])
@@ -561,6 +563,35 @@ function New-SjcGuiApp {
     Set-SjcGuiPanel $app 'Files' $false;Set-SjcGuiPanel $app 'Logs' $false
     Update-SjcGuiView $app
     return $app
+}
+function Format-SjcGuiElapsed {
+    param([TimeSpan]$Elapsed)
+    if($Elapsed.TotalHours -ge 1){return ('{0:00}:{1:00}:{2:00}' -f [int][math]::Floor($Elapsed.TotalHours),$Elapsed.Minutes,$Elapsed.Seconds)}
+    return ('{0:00}:{1:00}' -f $Elapsed.Minutes,$Elapsed.Seconds)
+}
+function Clear-SjcGuiScanFeedback {
+    # 扫描反馈只属于当前 Scan 任务。清理、回收站、预览分页和任务结束后都不能沿用它。
+    param($State)
+    if($State.ScanClock){try{$State.ScanClock.Stop()}catch{}}
+    $State.ScanFeedback=$null;$State.ScanClock=$null
+}
+function Update-SjcGuiScanFeedback {
+    param($App)
+    $s=$App.State;$u=$App.Ui
+    if(-not $u.ScanFeedbackText){return}
+    $feedback=$s.ScanFeedback
+    $scanning=($s.Task -and [string]$s.Task.Action -eq 'Scan' -and $s.Busy)
+    if(-not $scanning -or -not $feedback){
+        $u.ScanFeedbackText.Text='';$u.ScanFeedbackText.ToolTip=$null;$u.ScanFeedbackText.Visibility='Collapsed';return
+    }
+    $elapsed=if($s.ScanClock){$s.ScanClock.Elapsed}else{[timespan]::Zero}
+    $reviewed=if($null -ne $feedback.Reviewed){'{0:N0}' -f [int64]$feedback.Reviewed}else{'尚未收到'}
+    $candidates=if($null -ne $feedback.CandidateCount){'{0:N0}' -f [int64]$feedback.CandidateCount}else{'尚未收到'}
+    $text=('已用时 {0}　已检查文件 {1}　发现候选 {2}　尚未删除任何文件' -f (Format-SjcGuiElapsed $elapsed),$reviewed,$candidates)
+    if($feedback.CancelRequested -or ($s.Task -and $s.Task.CancelRequested)){$text+='　正在取消，等待实际结果'}
+    $u.ScanFeedbackText.Text=$text
+    $u.ScanFeedbackText.ToolTip=('文件总数未知，因此不显示百分比。已检查文件不是清理复核数，发现候选也不代表已删除。'+$text)
+    $u.ScanFeedbackText.Visibility='Visible'
 }
 function Set-SjcGuiStatus {
     param($App,[string]$Text)
@@ -713,6 +744,7 @@ function Update-SjcGuiView {
     $u.CancelButton.Visibility=if($s.Busy){'Visible'}else{'Collapsed'}
     $u.CancelButton.IsEnabled=$s.Busy -and -not $App.Maintenance
     $u.BusyProgress.Visibility=if($s.Busy){'Visible'}else{'Collapsed'}
+    Update-SjcGuiScanFeedback $App
     $u.PreviousButton.IsEnabled=$idle -and $cleanable -and $s.PageOffset -gt 0
     $u.NextButton.IsEnabled=$idle -and $cleanable -and ($s.PageOffset+$s.PageSize) -lt $s.Scan.CandidateCount
     foreach($name in @('RemovePreviewButton')){$u[$name].IsEnabled=$idle}
@@ -725,7 +757,7 @@ function Update-SjcGuiView {
         $u.PageText.Text=('第 {0} / {1} 页  ·  {2:N0}–{3:N0} / {4:N0} 条  ·  每页 {5} 条' -f ([math]::Floor($s.PageOffset/$s.PageSize)+1),[math]::Max(1,[math]::Ceiling($s.Scan.CandidateCount/$s.PageSize)),$first,$last,$s.Scan.CandidateCount,$s.PageSize)
     }else{
         foreach($name in @('MetricBytes','MetricCount','MetricKept')){$u[$name].Text='—'}
-        $u.PendingText.Text=if($s.Scan){'范围已变化，需重新扫描'}else{'尚未扫描'}
+        $u.PendingText.Text=if($s.Task -and [string]$s.Task.Action -eq 'Scan'){'正在扫描，结果持续更新'}elseif($s.Scan){'范围已变化，需重新扫描'}else{'尚未扫描'}
         $u.CleanButtonText.Text='清理…';$u.PageText.Text=''
     }
     $currentId=if($u.CandidatesList.SelectedItem){$u.CandidatesList.SelectedItem.Id}else{$null}
@@ -812,7 +844,7 @@ function New-SjcGuiAdvancedDraftWindow {
     try{$window=[Windows.Markup.XamlReader]::Load($reader)}finally{$reader.Dispose()}
     [void]$window.Resources.MergedDictionaries.Add($App.Ui.Window.Resources)
     if($App.Ui.Window.Icon){$window.Icon=$App.Ui.Window.Icon}
-    $draft=@{App=$App;Window=$window;Ids=$ids;Rows=$rows;Accepted=$false;List=$window.FindName('DraftList');Count=$window.FindName('DraftCount');Accept=$window.FindName('DraftAccept')}
+    $draft=@{App=$App;Window=$window;Ids=$ids;Rows=$rows;Accepted=$false;AuthorizationChanged=$false;List=$window.FindName('DraftList');Count=$window.FindName('DraftCount');Accept=$window.FindName('DraftAccept')}
     $window.Tag=$draft
     $window.FindName('MaintenanceButton').Tag=$draft
     $window.FindName('MaintenanceButton').Add_Click({param($sender,$event) Show-SjcGuiMaintenance $sender.Tag})
@@ -941,14 +973,21 @@ function Confirm-SjcGuiAdvancedDraft {
     Request-SjcGuiScope $App @{Profile=$s.Profile;CustomEnabled=$true;CustomIds=$ordered}
     return $true
 }
+# 深度探索入口：独立窗口（先盘点、查看建议，经明确批准才回收），单实例；窗口关闭由 ExplorerGui 自行暂停任务并异步释放 Host，不影响主窗口清理流程。
+function Show-SjcGuiExplorer {
+    param($App)
+    if(-not (Get-Command Open-SjcExplorerWindow -ErrorAction SilentlyContinue)){Set-SjcGuiStatus $App '深度探索模块未加载。';return}
+    try{[void](Open-SjcExplorerWindow $App.Ui.Window $null)}
+    catch{Set-SjcGuiStatus $App ('无法打开深度探索：'+$_.Exception.Message)}
+}
 function Show-SjcGuiAdvancedDraft {
     param($App)
     $s=$App.State
     if($s.Busy -or $s.PendingScope){throw '请等待当前任务结束后再调整范围。'}
     $window=New-SjcGuiAdvancedDraftWindow $App
     $window.Owner=$App.Ui.Window;$window.WindowStartupLocation='CenterOwner'
-    $accepted=[bool]$window.ShowDialog() -and $window.Tag.Accepted
-    if(-not $accepted){if($window.Tag.AuthorizationChanged){Set-SjcGuiStatus $App '授权已变化，请重新打开高级规则并重新扫描。'}else{Set-SjcGuiStatus $App '已关闭高级自定义草稿，范围未改变。'};return}
+    $accepted=[bool]$window.ShowDialog() -and [bool](Get-SjcGuiValue $window.Tag 'Accepted' $false)
+    if(-not $accepted){if([bool](Get-SjcGuiValue $window.Tag 'AuthorizationChanged' $false)){Set-SjcGuiStatus $App '授权已变化，请重新打开高级规则并重新扫描。'}else{Set-SjcGuiStatus $App '已关闭高级自定义草稿，范围未改变。'};return}
     try{[void](Confirm-SjcGuiAdvancedDraft $App (Get-SjcGuiAdvancedDraftIds $window.Tag))}
     catch{Set-SjcGuiStatus $App ('未应用高级自定义：'+$_.Exception.Message);Update-SjcGuiView $App}
 }
@@ -1139,6 +1178,8 @@ function Start-SjcGuiTask {
     $process=[Diagnostics.Process]::new();$process.StartInfo=$info
     try{if(-not $process.Start()){throw '无法启动后台进程。'}}catch{$process.Dispose();throw}
     $s.Task=@{Action=$Action;TaskDirectory=$task;Process=$process;OutputPath=$outputPath;ProgressPath=$progress;CancelPath=$cancel;CancelRequested=$false;CancelAt=$null;Forced=$false;RuleIds=[string[]]@(Get-SjcGuiValue $payload 'RuleIds' @());Profile=[string](Get-SjcGuiValue $payload 'CleaningProfile' '');CustomEnabled=[bool](Get-SjcGuiValue $payload 'CustomEnabled' $false)}
+    Clear-SjcGuiScanFeedback $s
+    if($Action -eq 'Scan'){$s.ScanClock=[Diagnostics.Stopwatch]::StartNew();$s.ScanFeedback=@{Reviewed=$null;CandidateCount=$null;UpdatedUtc=$null;CancelRequested=$false}}
     $s.Busy=$true;if($Action -eq 'Scan'){Clear-SjcGuiScan $App}
     Set-SjcGuiStatus $App ('后台任务已启动：'+@{Scan='扫描';Clean='清理';Recycle='清空回收站'}[$Action]);Update-SjcGuiView $App
 }
@@ -1146,7 +1187,7 @@ function Request-SjcGuiCancel {
     param($App)
     if($App.State.LocalJob){$App.State.LocalJob.Cancel.Cancel();Set-SjcGuiStatus $App '已请求取消候选操作；等待安全收尾。';return}
     $task=$App.State.Task
-    if($task -and -not $task.CancelRequested){Write-SjcAtomicText $task.CancelPath 'cancel' -NoOverwrite;$task.CancelRequested=$true;$task.CancelAt=[datetime]::UtcNow;Set-SjcGuiStatus $App '已请求取消，等待实际处理结果；不代表零文件已处理。'}
+    if($task -and -not $task.CancelRequested){Write-SjcAtomicText $task.CancelPath 'cancel' -NoOverwrite;$task.CancelRequested=$true;$task.CancelAt=[datetime]::UtcNow;if($App.State.ScanFeedback){$App.State.ScanFeedback.CancelRequested=$true};Set-SjcGuiStatus $App '已请求取消，等待实际处理结果；不代表零文件已处理。'}
 }
 function Complete-SjcGuiTask {
     param($App,$Result)
@@ -1169,6 +1210,7 @@ function Complete-SjcGuiTask {
         if(-not $s.Stale -and ($sealedProfile -cne $s.Profile -or $sealedCustom -isnot [bool] -or $sealedCustom -ne $s.CustomEnabled)){$s.Stale=$true;$errorText+=$(if($errorText){'；'}else{''})+'扫描封存范围与当前范围不一致，需重新扫描'}
         if(-not $s.Stale -and $Result.CandidateCount -gt 0){Start-SjcGuiLocalJob $App 'Open' @{PlanPath=$Result.PlanPath}}
     }elseif($action -eq 'Clean'){$s.Stale=$true;$s.PageItems=@()}
+    Clear-SjcGuiScanFeedback $s
     Set-SjcGuiStatus $App ($label+'：'+$summary+$(if($errorText){'；'+$errorText}else{''})+$(if($action -eq 'Clean'){'。需重新扫描；回收站移动不等于空间释放。'}else{''}))
     Update-SjcGuiView $App
 }
@@ -1204,8 +1246,24 @@ function Invoke-SjcGuiTick {
     if(-not $s.Task){return}
     $task=$s.Task
     if([IO.File]::Exists($task.ProgressPath)){
-        try{$progress=Read-SjcSafeText $task.ProgressPath|ConvertFrom-Json;Set-SjcGuiStatus $App $progress.Text}catch{}
-    }
+        try{
+            $progress=Read-SjcSafeText $task.ProgressPath|ConvertFrom-Json
+            $text=[string](Get-SjcGuiValue $progress 'Text' '')
+            if($task.Action -eq 'Scan'){
+                $reviewed=Get-SjcGuiValue $progress 'Reviewed' $null
+                $candidates=Get-SjcGuiValue $progress 'CandidateCount' $null
+                if($reviewed -isnot [ValueType] -or $candidates -isnot [ValueType]){throw '扫描进度缺少真实文件计数。'}
+                if(-not $s.ScanFeedback){$s.ScanFeedback=@{CancelRequested=[bool]$task.CancelRequested}}
+                $s.ScanFeedback.Reviewed=[int64]$reviewed
+                $s.ScanFeedback.CandidateCount=[int64]$candidates
+                $s.ScanFeedback.UpdatedUtc=[string](Get-SjcGuiValue $progress 'UpdatedUtc' '')
+                $s.ScanFeedback.CancelRequested=[bool]$task.CancelRequested
+                Update-SjcGuiScanFeedback $App
+            }else{Clear-SjcGuiScanFeedback $s}
+            if($text){Set-SjcGuiStatus $App $text}
+        }catch{if($task.Action -eq 'Scan' -and $s.ScanFeedback){$s.ScanFeedback.Reviewed=$null;$s.ScanFeedback.CandidateCount=$null;Update-SjcGuiScanFeedback $App}}
+    }elseif($task.Action -eq 'Scan'){Update-SjcGuiScanFeedback $App}
+    else{Clear-SjcGuiScanFeedback $s}
     if($task.CancelRequested -and -not $task.Process.HasExited -and ([datetime]::UtcNow-$task.CancelAt).TotalSeconds -gt 20){$task.Process.Kill();$task.Forced=$true}
     if(-not $task.Process.HasExited){return}
     $result=$null
@@ -1242,6 +1300,7 @@ function Invoke-SjcGuiCommand {
                 }
                 'EmptyRecycleButton' {if(Confirm-SjcGui $App '永久清空当前可访问回收站，不能恢复。Windows 还会再次确认。是否继续？'){Start-SjcGuiTask $App 'Recycle'}}
                 'AdvancedButton' {Show-SjcGuiAdvancedDraft $App}
+                'DeepExploreButton' {Show-SjcGuiExplorer $App}
                 'KeepRuleButton' {$ids=Get-SjcGuiSelectedCategoryRuleIds $App;if($ids.Count -and (Test-SjcGuiCleanable $s)){Start-SjcGuiLocalJob $App 'RuleKeep' @{RuleIds=$ids;Keep=$true}}}
                 'RestoreRuleButton' {$ids=Get-SjcGuiSelectedCategoryRuleIds $App;if($ids.Count -and (Test-SjcGuiCleanable $s)){Start-SjcGuiLocalJob $App 'RuleKeep' @{RuleIds=$ids;Keep=$false}}}
                 'KeepButton' {
@@ -1334,6 +1393,11 @@ function Save-SjcGuiRender {
     $visual=$Window.Content
     $visual.Measure([Windows.Size]::new($Window.Width,$Window.Height));$visual.Arrange([Windows.Rect]::new(0,0,$Window.Width,$Window.Height));$visual.UpdateLayout()
     $bitmap=[Windows.Media.Imaging.RenderTargetBitmap]::new([int]$visual.ActualWidth,[int]$visual.ActualHeight,96,96,[Windows.Media.PixelFormats]::Pbgra32)
+    # Content-only evidence must include the window background; otherwise transparent
+    # layout gaps become black in image viewers although the actual window is light.
+    $backdrop=[Windows.Media.DrawingVisual]::new();$drawing=$backdrop.RenderOpen()
+    try{$brush=if($Window.Background){$Window.Background}else{[Windows.Media.Brushes]::White};$drawing.DrawRectangle($brush,$null,[Windows.Rect]::new(0,0,$visual.ActualWidth,$visual.ActualHeight))}finally{$drawing.Close()}
+    $bitmap.Render($backdrop)
     $bitmap.Render($visual);$encoder=[Windows.Media.Imaging.PngBitmapEncoder]::new();$encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
     $file=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write);try{$encoder.Save($file)}finally{$file.Dispose()}
 }

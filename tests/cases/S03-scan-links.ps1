@@ -63,7 +63,7 @@ try {
     $rootOutside = Join-Path $rootSandbox.Root 'root-outside'
     [void][IO.Directory]::CreateDirectory($rootOutside)
     New-TestFile -Path (Join-Path $rootOutside 'must-not-be-seen.tmp') -Bytes 32 -AgeHours 96 | Out-Null
-    [void][IO.Directory]::Delete($rootFiles, $false)
+    [void](Move-OwnedTestDirectoryToEvidence -Path $rootFiles)
     $rootReparseCreated = $false
     try { [void](New-Item -ItemType Junction -Path $rootFiles -Target $rootOutside -ErrorAction Stop); $rootReparseCreated = $true }
     catch { Add-CoverageGap ('无法把规则根替换为联接，重解析规则根拒绝用例未执行：' + $_.Exception.Message) }

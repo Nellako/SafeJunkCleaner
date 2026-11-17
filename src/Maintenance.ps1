@@ -21,6 +21,7 @@ function Invoke-SjcMaintenanceProcessStart {
     if($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)'){throw '系统 DISM 签名无效或签名者不是 Microsoft Corporation。'}
     $psi=[Diagnostics.ProcessStartInfo]::new()
     $psi.FileName=$spec.FileName;$psi.Arguments=$spec.Arguments;$psi.WorkingDirectory=$spec.WorkingDirectory;$psi.UseShellExecute=$true;$psi.Verb='runas'
+    if (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) { throw '隔离测试禁止真实维护进程启动（UAC/DISM）。' }
     return [Diagnostics.Process]::Start($psi)
 }
 function Start-SjcMaintenance {

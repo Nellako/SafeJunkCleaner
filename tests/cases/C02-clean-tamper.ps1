@@ -32,11 +32,11 @@ try {
     [IO.File]::SetLastWriteTimeUtc((Join-Path $files 'touch.tmp'), [datetime]::UtcNow.AddHours(-1))
     $replacePath = Join-Path $files 'replace.tmp'
     $replaceStamp = ([IO.FileInfo]::new($replacePath)).LastWriteTimeUtc
-    [IO.File]::Delete($replacePath)
+    Move-OwnedTestFileToEvidence -Path $replacePath
     $stream = [IO.File]::Open($replacePath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
     $stream.Write((New-Object byte[] 300), 0, 300); $stream.Dispose()
     [IO.File]::SetLastWriteTimeUtc($replacePath, $replaceStamp)
-    [IO.File]::Delete((Join-Path $files 'gone.tmp'))
+    Move-OwnedTestFileToEvidence -Path (Join-Path $files 'gone.tmp')
 
     $clean = Invoke-SjcClean -Context $context -TaskDirectory $task -RecycleMode $false
     [void](Save-Evidence 'tamper-clean' $clean)

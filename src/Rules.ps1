@@ -32,7 +32,7 @@ function Get-SjcChromiumProfileDirectories {
 
 function Get-SjcRuleTemplates {
     param([Parameter(Mandatory=$true)]$Context)
-    $configuration = Get-SjcContextConfiguration $Context
+    $configuration = Get-SjcRuleContextConfiguration $Context
     if ($configuration.IsTest) {
         @(
             New-SjcRule -Id 'SandboxOld' -TemplateId 'SandboxOld' -Name '自有测试旧文件' -Group '合成测试' -Root (Join-Path $configuration.TestRoot 'files') -Patterns @('*.tmp') -MinimumAgeHours 24 -Recommended $true
@@ -153,7 +153,7 @@ function Get-SjcCleaningProfiles {
     )
 }
 function Get-SjcPresetRuleIds {
-    param([Parameter(Mandatory=$true)]$Context,$CleaningProfile=(Get-SjcContextConfiguration $Context).CleaningProfile)
+    param([Parameter(Mandatory=$true)]$Context,$CleaningProfile=(Get-SjcRuleContextConfiguration $Context).CleaningProfile)
     Assert-SjcCleaningProfile $CleaningProfile
     $levels=@{Low=1;Medium=2;High=3}
     foreach($rule in @(Get-SjcRules $Context)) {
@@ -163,11 +163,11 @@ function Get-SjcPresetRuleIds {
 }
 function Get-SjcRules {
     param([Parameter(Mandatory=$true)]$Context)
-    $configuration=Get-SjcContextConfiguration $Context
+    $configuration=Get-SjcRuleContextConfiguration $Context
     $packages=@('NpmCache','NuGetCache','PipHttpCache','PipHttpV2Cache','PipWheelCache','YarnCache','GoBuildCache')
     $shaders=@('D3DSCache','NvidiaDXCache','NvidiaGLCache','AmdDxCache','AmdDxcCache','IntelShaderCache')
     $templates=@(Get-SjcRuleTemplates $Context)
-    if (Get-Command Get-SjcAuthorizedCacheRuleTemplates -CommandType Function -ErrorAction SilentlyContinue) { $templates += @(Get-SjcAuthorizedCacheRuleTemplates $Context) }
+    if (-not ($configuration.PSObject.Properties['InventoryOnly'] -and $configuration.InventoryOnly) -and (Get-Command Get-SjcAuthorizedCacheRuleTemplates -CommandType Function -ErrorAction SilentlyContinue)) { $templates += @(Get-SjcAuthorizedCacheRuleTemplates $Context) }
     foreach($rule in $templates) {
         # Future templates are opt-in until assigned a reviewed preset level.
         $rule.PresetLevel='CustomOnly'

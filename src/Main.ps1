@@ -4,11 +4,18 @@ param(
     [ValidateSet('Gui','Scan','Clean','Recycle','SelfTest')]
     [string]$WorkerMode = 'Gui',
     [string]$PayloadPath,
-    [string]$OutputPath
+    [string]$OutputPath,
+    [string]$SelfTestParentDirectory = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ps2exe uses the framework host defaults, unlike powershell.exe. Keep ordinary
+# long local paths usable without changing OS policy or the path safety checks.
+[AppContext]::SetSwitch('Switch.System.IO.UseLegacyPathHandling',$false)
+[AppContext]::SetSwitch('Switch.System.IO.BlockLongPaths',$false)
+
+if ($SelfTestParentDirectory -and ($WorkerMode -ne 'SelfTest' -or $PayloadPath -or $OutputPath)) { throw 'SelfTestParentDirectory 仅允许无载荷、无外部输出通道的 SelfTest。' }
 $script:SjcEntryPath = $PSCommandPath
 $script:SjcIsPackaged = [string]::IsNullOrWhiteSpace($script:SjcEntryPath)
 if ($script:SjcIsPackaged) {
@@ -21,7 +28,7 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 # <SJC-MODULES>
 
 if (-not (Get-Command Start-SjcGui -ErrorAction SilentlyContinue)) {
-    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1')) {
+    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1','ExplorerGui.ps1')) {
         . (Join-Path $PSScriptRoot $moduleName)
     }
 }
@@ -35,7 +42,7 @@ if ($WorkerMode -eq 'Gui') {
     Start-SjcGui
 } else {
     try {
-        $result = Invoke-SjcWorker -Mode $WorkerMode -PayloadPath $PayloadPath -OutputPath $OutputPath
+        $result = Invoke-SjcWorker -Mode $WorkerMode -PayloadPath $PayloadPath -OutputPath $OutputPath -SelfTestParentDirectory $SelfTestParentDirectory
         if ($null -eq $result) { throw 'Worker returned no result.' }
         if (-not $script:SjcIsPackaged) { $result | ConvertTo-Json -Depth 12 -Compress | Write-Output }
         if ($result.Status -ne 'Success') { exit 1 }

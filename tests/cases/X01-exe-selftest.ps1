@@ -23,13 +23,19 @@ try {
     $signature=[string](Get-AuthenticodeSignature -LiteralPath $ExePath).Status
     Save-Evidence 'exe-facts' ([pscustomobject]@{SHA256=(Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash;FileVersion=$version.FileVersion;Signature=$signature})|Out-Null
     if($signature -ne 'Valid'){Add-Limitation ('Authenticode='+$signature+'; unsigned is disclosed, not proof of trust.')}
-    $context=New-SjcContext;$task=New-SjcTaskDirectory $context;$output=Join-Path $task 'exe-selftest.json'
-    $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$ExePath;$info.Arguments='-end -WorkerMode SelfTest -OutputPath "'+$output+'"';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+    $parent=Join-Path $EvidenceDirectory ('exe-owned-'+[guid]::NewGuid().ToString('N'))
+    if(Test-Path -LiteralPath $parent){throw 'New EXE test parent required'}
+    $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$ExePath;$info.Arguments='-end -WorkerMode SelfTest -SelfTestParentDirectory "'+$parent+'"';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
     $p=[Diagnostics.Process]::new();$p.StartInfo=$info;[void]$p.Start();$null=$p.Handle;$done=$p.WaitForExit(60000);if(-not $done){$p.Kill();[void]$p.WaitForExit(5000)}
     Assert-True 'EXE completes within timeout' $done
     Assert-Equal 'EXE exit zero' 0 $p.ExitCode;$p.Dispose()
-    Assert-True 'EXE writes approved output' ([IO.File]::Exists($output))
+    $logs=@(Get-ChildItem -LiteralPath $parent -Recurse -File -Filter 'selftest-*.json')
+    Assert-Equal 'EXE writes exactly one owned selftest log' 1 $logs.Count
+    if($logs.Count -ne 1){throw 'SelfTest output missing or ambiguous'}
+    $output=$logs[0].FullName
     $result=Get-Content -LiteralPath $output -Raw -Encoding UTF8|ConvertFrom-Json;Save-Evidence 'exe-result' $result|Out-Null
+    Assert-True 'EXE result stays under requested test parent' (Test-SjcPathWithin $result.SandboxRoot $parent)
+    $task=[IO.Path]::GetDirectoryName($result.Scan.PlanPath)
     Assert-Equal 'EXE selftest success' 'Success' $result.Status $result.Error
     Assert-Equal 'all EXE checks passed' 0 (@($result.Checks|Where-Object {-not $_.Passed}).Count)
     Assert-Equal 'EXE GUI success' 'Success' $result.Gui.Status (@($result.Gui.Failed)-join ';')
@@ -39,7 +45,8 @@ try {
     Assert-True 'EXE new target survives' ([IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-new.tmp')))
     Assert-True 'EXE excluded target survives' ([IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-kept.tmp')))
     Assert-True 'EXE old target removed' (-not [IO.File]::Exists((Join-Path $result.SandboxRoot 'files\owned-old.tmp')))
-    Assert-True 'EXE completion marker' ([IO.File]::Exists((Join-Path $task 'task.completed')))
+    Assert-True 'EXE records artificial deletion before execution' ([IO.File]::Exists((Join-Path $task 'test-deletion-manifest.json')))
+    Assert-True 'EXE preserves single-use cleanup claim' ([IO.File]::Exists((Join-Path $task 'clean.claimed')))
     Add-DeclaredExclusion 'No real recycle-bin empty or production cache scan/clean; EXE selftest uses its own GUID sandbox.'
 } catch {Assert-True ('unhandled: '+$_.Exception.Message) $false $_.ScriptStackTrace}
 Complete-TestCase

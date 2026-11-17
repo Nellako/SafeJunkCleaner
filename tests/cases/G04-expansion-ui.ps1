@@ -50,7 +50,7 @@ try {
     Assert-True 'the context-configuration probe is restored to the production definition' ((Get-Command Get-SjcContextConfiguration).Definition -eq $originalContextConfig.ToString()) 'definition comparison'
     $prodRootBytesAfter = if ([IO.File]::Exists((Join-Path $script:ProdStateRoot 'preferences-v4.json'))) { (Get-FileHash -LiteralPath (Join-Path $script:ProdStateRoot 'preferences-v4.json') -Algorithm SHA256).Hash } else { '<absent>' }
     Assert-Equal 'refused TestMode attempts leave the production preferences file untouched' $prodRootBytesBefore $prodRootBytesAfter ('before=' + [string]$prodRootBytesBefore + '; after=' + [string]$prodRootBytesAfter)
-    Add-Limitation 'G04 生产状态根的“无写入”只以 preferences-v4.json 的 SHA-256 不变为证：自有 GUID 沙箱本身位于生产 StateRoot\Sandboxes 下，全目录计数必然变化，故不做计数比较。'
+    Add-Limitation 'G04 只在证据目录下的自有沙箱写入；正式 preferences-v4.json 哈希及 Harness 正式状态树前后快照均需不变，未创建正式上下文。'
 
     $state = New-SjcGuiState $context -TestMode
     $app = New-SjcGuiApp $state
@@ -107,7 +107,7 @@ try {
     $discoveryValid.Close()
 
     # Stale authorization: Supported=true, Authorized=true, Status=StaleAuthorization.
-    Remove-Item -LiteralPath $source -Recurse -Force
+    [void](Move-OwnedTestDirectoryToEvidence -Path $source)
     [void][IO.Directory]::CreateDirectory($layout)
     [IO.File]::WriteAllText((Join-Path $layout 'list_testpkg.dat'), 'x')
     $staleLocations = @(Get-SjcDiscoveredCacheLocations -Context $context)

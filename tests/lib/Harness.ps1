@@ -13,6 +13,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:ReviewedCoreCases=@(([IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\cases\reviewed-core-cases.json')) | ConvertFrom-Json).Reviewed)
+if ($CaseId -notin $script:ReviewedCoreCases) { throw '用例未列入已审查清单，直接调用亦阻断。' }
+$expectedRepo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if (-not ([IO.Path]::GetFullPath($RepoRoot)).Equals($expectedRepo,[StringComparison]::OrdinalIgnoreCase)) { throw 'RepoRoot 必须与当前测试模块所属仓库一致。' }
+$evidenceBase=[IO.Path]::GetDirectoryName($expectedRepo)+'\'
+$evidenceFull=[IO.Path]::GetFullPath($EvidenceDirectory)
+$resultFull=[IO.Path]::GetFullPath($ResultPath)
+foreach ($path in @($evidenceFull,$resultFull)) {
+    if (-not $path.StartsWith($evidenceBase,[StringComparison]::OrdinalIgnoreCase) -or ($path.Equals($expectedRepo,[StringComparison]::OrdinalIgnoreCase) -or $path.StartsWith($expectedRepo+'\',[StringComparison]::OrdinalIgnoreCase))) { throw '测试证据通道必须位于授权证据目录，不能写源码树或外部路径。' }
+}
+
 $script:CaseId = $CaseId
 $script:RepoRoot = $RepoRoot
 $script:ResultPath = $ResultPath
@@ -22,6 +33,7 @@ $script:CoverageGaps = [System.Collections.Generic.List[string]]::new()
 $script:Limitations = [System.Collections.Generic.List[string]]::new()
 $script:DeclaredExclusions = [System.Collections.Generic.List[string]]::new()
 $script:OwnedSandboxes = [System.Collections.Generic.List[string]]::new()
+$script:OwnedTestFiles=@{}
 $script:OwnedTaskDirectories = [System.Collections.Generic.List[string]]::new()
 $script:CancelHelpers = [System.Collections.Generic.List[object]]::new()
 $script:StartedUtc = [datetime]::UtcNow
@@ -66,11 +78,16 @@ $script:ProdSnapshotBeforeLoad = Get-PathSnapshot $script:ProdStateRoot
 . (Join-Path $RepoRoot 'src\Discovery.ps1')
 . (Join-Path $RepoRoot 'src\Maintenance.ps1')
 . (Join-Path $RepoRoot 'src\Worker.ps1')
+$script:IsolatedSandboxParent = Join-Path $EvidenceDirectory 'Sandboxes'
+Enable-SjcTestIsolation -ParentDirectory $script:IsolatedSandboxParent
+Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
 
 if ($LoadGui) {
     $guiModule = Join-Path $RepoRoot 'src\Gui.ps1'
     if ([IO.File]::Exists($guiModule)) {
         . $guiModule
+        $explorerModule = Join-Path $RepoRoot 'src\ExplorerGui.ps1'
+        if ([IO.File]::Exists($explorerModule)) { . $explorerModule }
         $script:GuiModuleLoaded = $true
     }
     else {
@@ -104,11 +121,13 @@ function Add-Limitation {
 }
 
 function New-ProductionContextForInventory {
-    # Rule inventory only. Creates the v3 state root if absent; never writes
-    # preferences, tasks, plans or logs, and never enumerates production caches.
-    $existed = [IO.Directory]::Exists($script:ProdStateRoot)
-    $context = New-SjcContext
-    if (-not $existed) { Add-Limitation '生产状态根 %LOCALAPPDATA%\SafeJunkCleaner\v3 在规则清单读取时被创建（空目录），未写首选项/任务/日志。' }
+    # Real production templates and the same tier/preset transformations. No execution
+    # registration, state directory, authorization-store import, scan or preference IO.
+    $context=New-SjcRuleInventoryContext
+    Assert-Throws 'inventory context cannot create executable tasks' { New-SjcTaskDirectory -Context $context } '可信上下文'
+    Assert-Throws 'inventory context cannot read or write preferences' { Read-SjcPreferences -Context $context } '可信上下文'
+    Assert-Throws 'inventory context cannot create operation logs' { New-SjcOperationLog -Context $context -Operation 'inventory-denied' } '可信上下文'
+    Add-Limitation '真实生产模板只读清单：复用固定模板/受限Profile发现及档位变换，不导入持久授权、不创建状态、不注册执行上下文；真实扫描/清理未测。'
     return $context
 }
 
@@ -159,13 +178,13 @@ function Assert-Throws {
 }
 
 function New-OwnedSandbox {
-    $sandbox = New-SjcTestSandbox
+    $sandbox = New-SjcTestSandbox -ParentDirectory $script:IsolatedSandboxParent
     $root = [string]$sandbox.Root
     $leaf = [IO.Path]::GetFileName($root)
     $guid = [guid]::Empty
     $isGuid = [guid]::TryParseExact($leaf, 'D', [ref]$guid)
     $ownerPath = Join-Path $root '.sandbox-owner'
-    Assert-True 'sandbox root is GUID under production StateRoot\Sandboxes' ($isGuid -and $root.StartsWith($script:ProdStateRoot + '\Sandboxes\', [StringComparison]::OrdinalIgnoreCase)) $root
+    Assert-True 'sandbox root is a registered GUID under the isolated evidence parent' ($isGuid -and [IO.Path]::GetDirectoryName($root).Equals($script:IsolatedSandboxParent,[StringComparison]::OrdinalIgnoreCase)) $root
     Assert-True 'sandbox ownership marker exists' ([IO.File]::Exists($ownerPath)) $ownerPath
     if ($isGuid) { [void]$script:OwnedSandboxes.Add($root) }
     return $sandbox
@@ -173,47 +192,60 @@ function New-OwnedSandbox {
 
 function Remove-OwnedDirectoryNoFollow {
     param([string]$Path, [string]$RequiredMarker = '.sandbox-owner')
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Directory]::Exists($Path)) { return }
-    if (-not [IO.File]::Exists((Join-Path $Path $RequiredMarker))) { throw ('refusing to remove unmarked test directory: ' + $Path) }
-    $stack = New-Object 'System.Collections.Generic.Stack[string]'
-    $stack.Push($Path)
-    while ($stack.Count -gt 0) {
-        $dir = $stack.Pop()
-        foreach ($entry in (Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
-            $isLink = (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-            if ($isLink) {
-                try {
-                    if ($entry.PSIsContainer) { [IO.Directory]::Delete($entry.FullName, $false) }
-                    else { [IO.File]::Delete($entry.FullName) }
-                } catch { }
-                continue
-            }
-            if ($entry.PSIsContainer) { $stack.Push($entry.FullName); continue }
-            try {
-                if (($entry.Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) { $entry.Attributes = $entry.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly) }
-                [IO.File]::Delete($entry.FullName)
-            } catch { }
-        }
-    }
-    $dirs = [System.Collections.Generic.List[string]]::new()
-    $stack.Push($Path)
-    while ($stack.Count -gt 0) {
-        $dir = $stack.Pop()
-        $dirs.Add($dir)
-        foreach ($entry in (Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
-            if ($entry.PSIsContainer -and (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0)) { $stack.Push($entry.FullName) }
-        }
-    }
-    foreach ($dir in ($dirs | Sort-Object Length -Descending)) {
-        try { [IO.Directory]::Delete($dir, $false) } catch { try { [IO.Directory]::Delete($dir, $true) } catch { } }
-    }
+    throw ('本阶段禁止任何目录清理；保留测试证据：' + $Path)
+}
+function Remove-OwnedSandboxes {
+    # Retain registry and all directories for independent review, unconditionally.
 }
 
-function Remove-OwnedSandboxes {
-    foreach ($root in $script:OwnedSandboxes) {
-        try { Remove-OwnedDirectoryNoFollow -Path $root -RequiredMarker '.sandbox-owner' } catch { }
+# Reversible fixture mutation only. Registration pins the real file identity;
+# manifest is durable before moving, and all evidence/owned directories are retained.
+function Register-OwnedTestFile {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $full=Get-SjcFullPath $Path
+    $owner=''
+    foreach($root in $script:OwnedSandboxes) {
+        if (Test-SjcPathWithin $full $root) { Assert-SjcSandbox $root; $owner=$root; break }
     }
-    $script:OwnedSandboxes.Clear()
+    if (-not $owner -or -not (Test-SjcNoReparsePath $full)) { throw '人工文件必须属于本用例已注册无重解析沙箱。' }
+    $script:OwnedTestFiles[$full]=[pscustomobject]@{Root=$owner;Identity=(Get-SjcFileIdentity $full)}
+}
+function Move-OwnedTestFileToEvidence {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $full=Get-SjcFullPath $Path
+    if (-not $script:OwnedTestFiles.ContainsKey($full)) { throw '人工文件未登记，拒绝移动。' }
+    $entry=$script:OwnedTestFiles[$full]
+    Assert-SjcSandbox $entry.Root
+    if (-not (Test-SjcNoReparsePath $full) -or (Get-SjcFileIdentity $full) -cne $entry.Identity) { throw '人工文件身份变化或路径不安全，拒绝移动。' }
+    $id=[guid]::NewGuid().ToString('N')
+    $destination=Join-Path $script:EvidenceDirectory ('retained-'+$id+'.fixture')
+    $manifest=Join-Path $script:EvidenceDirectory ('move-manifest-'+$id+'.json')
+    Write-SjcAtomicText -Path $manifest -Text ([ordered]@{Source=$full;Destination=$destination;SandboxRoot=$entry.Root;Identity=$entry.Identity;SHA256=(Get-FileSha256 $full);CreatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress) -NoOverwrite
+    if ((Get-SjcFileIdentity $full) -cne $entry.Identity) { throw '移动前身份变化。' }
+    [IO.File]::Move($full,$destination)
+    [void]$script:OwnedTestFiles.Remove($full)
+}
+
+function Move-OwnedTestDirectoryToEvidence {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $full=Get-SjcFullPath $Path
+    $owner=''
+    foreach($root in $script:OwnedSandboxes) {
+        if (Test-SjcPathWithin $full $root) { Assert-SjcSandbox $root; $owner=$root; break }
+    }
+    if (-not $owner -or -not [IO.Directory]::Exists($full) -or -not (Test-SjcNoReparsePath $full)) { throw '目录必须属于本用例已注册无重解析沙箱。' }
+    $entries=@(Get-PathSnapshot $full)
+    $manifestEntries=@(foreach($entry in $entries) {
+        if ($entry.IsLink -or -not (Test-SjcNoReparsePath $entry.Path)) { throw '保留目录含链接，拒绝移动。' }
+        [pscustomobject]@{Path=$entry.Path;IsDirectory=$entry.IsDirectory;Length=$entry.Length;SHA256=$(if(-not $entry.IsDirectory){Get-FileSha256 $entry.Path});Identity=$(if(-not $entry.IsDirectory){Get-SjcFileIdentity $entry.Path})}
+    })
+    $id=[guid]::NewGuid().ToString('N')
+    $destination=Join-Path ([IO.Path]::GetDirectoryName($full)) ('retained-directory-'+$id)
+    Write-SjcAtomicText -Path (Join-Path $script:EvidenceDirectory ('directory-move-manifest-'+$id+'.json')) -Text ([ordered]@{Source=$full;Destination=$destination;SandboxRoot=$owner;Entries=$manifestEntries;CreatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 8) -NoOverwrite
+    Assert-SjcSandbox $owner
+    if (-not (Test-SjcNoReparsePath $full) -or ($entries|ConvertTo-Json -Depth 5 -Compress) -cne ((Get-PathSnapshot $full)|ConvertTo-Json -Depth 5 -Compress)) { throw '移动前目录发生变化。' }
+    [IO.Directory]::Move($full,$destination)
+    return $destination
 }
 
 function New-TestFile {
@@ -239,6 +271,7 @@ function New-TestFile {
     $stamp = [datetime]::UtcNow.AddHours(-1 * $AgeHours)
     [IO.File]::SetLastWriteTimeUtc($Path, $stamp)
     if ($ReadOnly) { [IO.File]::SetAttributes($Path, [IO.FileAttributes]::ReadOnly) }
+    Register-OwnedTestFile -Path $Path
     return [IO.FileInfo]::new($Path)
 }
 
@@ -263,6 +296,32 @@ function Start-CancelHelper {
         [int]$Threshold = 0,
         [int]$TimeoutSeconds = 120
     )
+    # This child can only watch this case's owned files and publish cancellation to
+    # an authenticated task of the very same sandbox. No payload-provided roots.
+    $watchFull=Get-SjcFullPath $WatchPath
+    $cancelFull=Get-SjcFullPath $CancelPath
+    $owner=''; $context=$null
+    foreach($root in $script:OwnedSandboxes) {
+        if (Test-SjcPathWithin $watchFull $root) { Assert-SjcSandbox $root; $owner=$root; break }
+    }
+    if (-not $owner) { throw 'Watcher 观察路径必须属于本用例已登记沙箱。' }
+    foreach($entry in (Get-SjcRegistry)) {
+        if ($entry.IsTest -and $entry.TestRoot -ceq $owner) { $context=$entry.Context; break }
+    }
+    if ($null -eq $context) { throw 'Watcher 沙箱没有本进程测试上下文。' }
+    $task=Assert-SjcTaskDirectory $context ([IO.Path]::GetDirectoryName($cancelFull))
+    [void](Assert-SjcChannel $task $cancelFull)
+    if ([IO.File]::Exists($cancelFull) -or [IO.Directory]::Exists($cancelFull)) { throw 'Watcher 取消标记必须为新文件。' }
+    if ($Mode -eq 'RemainingCount') {
+        if ($watchFull -cne (Join-Path $owner 'files') -or -not (Test-SjcNoReparsePath $watchFull)) { throw 'Watcher 只能计数同一沙箱的自有 files。' }
+        foreach($file in [IO.Directory]::GetFiles($watchFull,'*.tmp')) {
+            if (-not $script:OwnedTestFiles.ContainsKey($file) -or (Get-SjcFileIdentity $file) -cne $script:OwnedTestFiles[$file].Identity) { throw 'Watcher 文件未登记或身份变化。' }
+        }
+    } else {
+        if ($watchFull -cne (Join-Path $task 'candidates.jsonl') -or -not (Test-SjcNoReparsePath $watchFull -AllowMissing)) { throw 'Watcher 只能观察同一认证任务计划。' }
+    }
+    $WatchPath=$watchFull; $CancelPath=$cancelFull
+    [void](Save-Evidence ('cancel-watch-boundary-'+[guid]::NewGuid().ToString('N')) ([ordered]@{Mode=$Mode;WatchPath=$WatchPath;CancelPath=$CancelPath;SandboxRoot=$owner;TaskDirectory=$task;Threshold=$Threshold}))
     $helper = Join-Path $script:RepoRoot 'tests\lib\cancel_watch.ps1'
     $out = Join-Path $script:EvidenceDirectory ('cancelhelper-' + [guid]::NewGuid().ToString('N') + '.out')
     $err = Join-Path $script:EvidenceDirectory ('cancelhelper-' + [guid]::NewGuid().ToString('N') + '.err')
@@ -296,7 +355,8 @@ function Stop-CancelHelpers {
 function Complete-TestCase {
     param([string]$StatusOverride = '')
     Stop-CancelHelpers
-    if ($env:SJC_KEEP_SANDBOX -ne '1') { Remove-OwnedSandboxes }
+    Add-Limitation '全部测试目录无条件保留；未执行目录清理。'
+    Assert-Equal 'production state unchanged during case' ($script:ProdSnapshotBeforeLoad | ConvertTo-Json -Depth 5 -Compress) (Get-PathSnapshot $script:ProdStateRoot | ConvertTo-Json -Depth 5 -Compress)
     $failed = 0; $passed = 0
     foreach ($check in $script:Checks) { if ($check.Passed) { $passed++ } else { $failed++ } }
     $status = if ($StatusOverride) { $StatusOverride }

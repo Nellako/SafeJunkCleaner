@@ -129,7 +129,14 @@ try {
     if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($output))) { throw 'Output parent must already exist.' }
     Assert-Snapshot
     $version=Read-Json (Join-Path $source 'version.json')
-    if ($version.version -ne '0.12.0' -or $version.fileVersion -ne '0.12.0.0') { throw 'Only v0.12.0 source is supported.' }
+    if ($version.version -cin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) {
+        if ($version.fileVersion -cne ($version.version+'.0')) { throw 'Component source file version mismatch.' }
+        $result=New-LpFormalComponentPackage $source $release $output $ExpectedSourceHead
+        Assert-Snapshot
+        $result | ConvertTo-Json -Depth 8
+        return
+    }
+    if ($version.version -ne '0.12.0' -or $version.fileVersion -ne '0.12.0.0') { throw 'Only explicit v0.12.0 legacy or v0.13.0/v0.14.0 component source is supported.' }
     $manifest=Read-Json (Join-Path $release 'release-manifest.json')
     if ($manifest.Version -ne $version.version) { throw 'Release version mismatch.' }
     $expected=New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)

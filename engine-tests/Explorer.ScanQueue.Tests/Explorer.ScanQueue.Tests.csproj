@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <NuGetLockFilePath>$(ArtifactsDirectory)\obj\$(MSBuildProjectName)\packages.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\engine\Explorer.Core\*.cs" Link="Core\%(Filename)%(Extension)" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.14]" />
+  </ItemGroup>
+</Project>

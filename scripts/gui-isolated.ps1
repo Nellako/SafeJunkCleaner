@@ -10,7 +10,7 @@
 param([switch]$Show,[string]$EvidenceDirectory,[ValidateSet('Low','Medium','High')][string]$Profile='Medium',[ValidateSet('Files','Logs','Advanced','Confirm')][string[]]$Expand=@(),[int]$FileCount=450)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-foreach($name in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1')){. (Join-Path (Join-Path $root 'src') $name)}
+foreach($name in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1','ExplorerGui.ps1')){. (Join-Path (Join-Path $root 'src') $name)}
 $script:SjcEntryPath=Join-Path $root 'src\Main.ps1';$script:SjcIsPackaged=$false
 if($Show -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA'){throw '请以 powershell.exe -STA 运行 -Show。'}
 $sandbox=New-SjcTestSandbox

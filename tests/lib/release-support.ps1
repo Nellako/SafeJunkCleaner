@@ -71,6 +71,8 @@ function Invoke-ReleaseProcess {
     $process.StartInfo = $startInfo
     $timedOut = $false
     $redirected = $true
+    $startedUtc = [datetime]::UtcNow
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
         if (-not $process.Start()) { throw ('Cannot start child: ' + $Tag) }
         $null = $process.Handle
@@ -91,7 +93,7 @@ function Invoke-ReleaseProcess {
         $redirected = $false
         $exitCode = $null
     }
-    finally { $process.Dispose() }
+    finally { $watch.Stop(); $process.Dispose() }
     return [pscustomobject]@{
         Tag = $Tag
         FilePath = $FilePath
@@ -99,6 +101,9 @@ function Invoke-ReleaseProcess {
         ExitCode = $exitCode
         TimedOut = $timedOut
         Redirected = $redirected
+        StartedUtc = $startedUtc.ToString('o')
+        FinishedUtc = [datetime]::UtcNow.ToString('o')
+        DurationSeconds = $watch.Elapsed.TotalSeconds
         StdoutPath = $stdout
         StderrPath = $stderr
     }
@@ -128,6 +133,9 @@ function New-ReleaseRunEvidence {
         ExitCode = $Run.ExitCode
         TimedOut = $Run.TimedOut
         Redirected = $Run.Redirected
+        StartedUtc = $Run.StartedUtc
+        FinishedUtc = $Run.FinishedUtc
+        DurationSeconds = $Run.DurationSeconds
         StdoutPath = $Run.StdoutPath
         StderrPath = $Run.StderrPath
         StdoutBytes = Get-ReleaseFileLength $Run.StdoutPath
@@ -157,6 +165,7 @@ function Assert-ReleaseNonZeroRun {
 
 function New-ReleaseProductionTask {
     param([string]$Tag = 'release')
+    throw '第一阶段禁止生产任务通道；跨进程测试通道尚未审查。'
     $stateRoot = Get-SjcProductionStateRoot
     $existed = [IO.Directory]::Exists($stateRoot)
     $context = New-SjcContext
@@ -170,6 +179,7 @@ function New-ReleaseProductionTask {
 
 function Remove-ReleaseProductionTaskBounded {
     param([string]$TaskDirectory, [string]$StateRoot)
+    throw '第一阶段禁止任务目录清理，全部目录保留。'
     # Test-only cleanup for a task directory this case created. Bounded to one
     # validated GUID task directly under StateRoot\Tasks; no directory recursion.
     if ([string]::IsNullOrWhiteSpace($TaskDirectory) -or -not [IO.Directory]::Exists($TaskDirectory)) { return $true }
@@ -191,6 +201,8 @@ function Remove-ReleaseProductionTaskBounded {
 
 function Remove-ReleaseProductionTask {
     param($TaskInfo, [string]$Tag = 'release')
+    Add-Limitation '第一阶段不执行任务目录清理，保留全部证据。'
+    return $false
     if ($null -eq $TaskInfo) { return $false }
     try {
         [void](Remove-SjcTaskDirectory -Context $TaskInfo.Context -TaskDirectory $TaskInfo.TaskDirectory)
@@ -312,7 +324,7 @@ function Assert-ReleaseStateRootStable {
     $unexpected = @($added | Where-Object { $_ -notin $AllowedNew })
     Assert-Equal ($Tag + ' removed no pre-existing production state entries') 0 $removed.Count ($removed -join ',')
     Assert-Equal ($Tag + ' added no unexpected production state entries') 0 $unexpected.Count ('added=' + ($added -join ',') + '; allowed=' + ($AllowedNew -join ','))
-    $preferencePath = Join-Path $StateRoot 'preferences-v3.json'
+    $preferencePath = Join-Path $StateRoot 'preferences-v4.json'
     $preferenceAfter = Get-FileSha256 $preferencePath
     Assert-Equal ($Tag + ' production preference hash is unchanged') ([string]$BeforePreferenceHash) ([string]$preferenceAfter) ('path=' + $preferencePath)
 }

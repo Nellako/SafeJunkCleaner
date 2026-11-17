@@ -91,7 +91,9 @@ try {
     Assert-Throws 'a non-NuGet/pip adapter is refused by the test seam' { Set-SjcTestDiscoverySources -Context $c1 -Sources @([pscustomobject]@{ Adapter = 'Npm'; Value = $nuget1 }) } 'adapter 无效'
     Assert-Throws 'a source outside the sandbox files root is refused' { Set-SjcTestDiscoverySources -Context $c1 -Sources @([pscustomobject]@{ Adapter = 'NuGetHttp'; Value = (Join-Path $s1.Root 'state') }) } '自有沙箱 files'
     $production = New-ProductionContextForInventory
-    Assert-Throws 'discovery source injection is refused for a production context' { Set-SjcTestDiscoverySources -Context $production -Sources @([pscustomobject]@{ Adapter = 'NuGetHttp'; Value = $nuget1 }) } 'GUID 沙箱'
+    Assert-Equal 'inventory context has no writable StateRoot' '' ([string]$production.StateRoot)
+    Assert-Throws 'read-only production inventory cannot enter the execution registry' { Get-SjcContextConfiguration $production } '^上下文不是本实现创建的可信上下文。$'
+    Assert-Throws 'discovery source injection is refused for read-only production inventory' { Set-SjcTestDiscoverySources -Context $production -Sources @([pscustomobject]@{ Adapter = 'NuGetHttp'; Value = $nuget1 }) } '^上下文不是本实现创建的可信上下文。$'
     Set-SjcTestDiscoverySources -Context $c1 -Sources @([pscustomobject]@{ Adapter = 'NuGetHttp'; Value = $nuget1 })
     $sources1 = @(Get-SjcDiscoverySources -Context $c1)
     Assert-Equal 'the injected source is visible to discovery only in the sandbox' 1 $sources1.Count
@@ -289,8 +291,7 @@ try {
     $rule2Old = Get-SingleItem @(Get-SjcRules -Context $c2 | Where-Object { $_.Id -ceq $candidate2.Id })
     Assert-True 'baseline rule is current before replacement' ($null -ne $rule2Old -and (Test-SjcDiscoveredRuleCurrent $rule2Old)) ''
 
-    $moved2 = $nuget2 + '-moved'
-    [IO.Directory]::Move($nuget2, $moved2)
+    $moved2 = Move-OwnedTestDirectoryToEvidence -Path $nuget2
     [void][IO.Directory]::CreateDirectory($nuget2)
     $file2After = New-NuGetLayoutFile -Root $nuget2 -Leaf 'list_after.dat' -AgeHours 200
     $candidate2New = Get-NuGetCandidate $c2
@@ -527,7 +528,7 @@ try {
     Add-DeclaredExclusion '未启动生产 Worker、未调用 Invoke-SjcWorker：Worker 边界只用 Assert-SjcWorkerPayload 验证载荷白名单。'
     Add-DeclaredExclusion '未读取、扫描或清理任何真实 NuGet HTTP / pip 缓存；发现源全部为本进程自建 GUID 沙箱内的合成布局。'
     Add-DeclaredExclusion '生产环境变量发现分支（NUGET_HTTP_CACHE_PATH/PIP_CACHE_DIR）未执行：本机两变量为空，测试通过 Set-SjcTestDiscoverySources 注入沙箱源。'
-    Add-Limitation '生产上下文仅为验证“测试源注入拒绝”而创建（规则清单路径，不扫描缓存内容）；未写入生产授权库。'
+    Add-Limitation '生产规则清单使用只读库存工厂，无 StateRoot、不注册执行上下文；注入明确因可信上下文校验而拒绝，未创建正式上下文或写正式授权库。生产执行上下文的 GUID 沙箱拒注入分支本轮未运行。'
     Add-Limitation '目录身份替换用同一源根改名后重建模拟，未替换真实缓存目录，也未验证 NTFS 卷序列号复用等极端场景。'
 }
 catch {

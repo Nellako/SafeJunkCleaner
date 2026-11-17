@@ -144,7 +144,7 @@ try {
         param([string]$Tier)
         $sandbox = New-OwnedSandbox
         $context = New-SjcContext -TestRoot $sandbox.Root -CleaningProfile $Tier
-        $mirror = Join-Path $sandbox.Root 'mirror'
+        $mirror = Join-Path $sandbox.Root 'files\mirror'
         $mirrorLocal = Join-Path $mirror 'Local'
         $mirrorWindows = Join-Path $mirror 'Windows'
         $rules = New-Object 'System.Collections.Generic.List[object]'

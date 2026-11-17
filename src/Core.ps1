@@ -72,22 +72,32 @@ function Get-SjcFileIdentity {
 function Set-SjcPrivateDirectory {
     param([string]$Path)
     if (-not (Test-SjcNoReparsePath $Path -AllowMissing)) { throw '状态目录祖先不安全。' }
-    [void][IO.Directory]::CreateDirectory($Path)
-    if (-not (Test-SjcNoReparsePath $Path)) { throw '状态目录不安全。' }
+    $exists=[IO.Directory]::Exists($Path)
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $acl = New-Object Security.AccessControl.DirectorySecurity
-    $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false)
+    if (-not $exists) { $acl.SetOwner($sid) }
+    else {
+        $current=if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::GetAccessControl([IO.DirectoryInfo]::new($Path)) } else { [IO.Directory]::GetAccessControl($Path) }
+        if ($current.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw '状态目录所有者不匹配，拒绝接管。' }
+    }
+    $acl.SetAccessRuleProtection($true,$false)
     foreach ($principal in @($sid, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
         $rule = [Security.AccessControl.FileSystemAccessRule]::new($principal, [Security.AccessControl.FileSystemRights]::FullControl,
             [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
         [void]$acl.AddAccessRule($rule)
     }
-    [IO.Directory]::SetAccessControl($Path,$acl)
+    if (-not $exists) {
+        if ($PSVersionTable.PSEdition -eq 'Core') { [void][IO.FileSystemAclExtensions]::CreateDirectory($acl,$Path) }
+        else { [void][IO.Directory]::CreateDirectory($Path,$acl) }
+    }
+    elseif ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($Path),$acl) }
+    else { [IO.Directory]::SetAccessControl($Path,$acl) }
+    Assert-SjcPrivateDirectory $Path
 }
 function Assert-SjcPrivateDirectory {
     param([string]$Path)
     if (-not (Test-SjcNoReparsePath $Path)) { throw '私有目录缺失或包含重解析点。' }
-    $acl = [IO.Directory]::GetAccessControl($Path)
+    $acl = if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::GetAccessControl([IO.DirectoryInfo]::new($Path)) } else { [IO.Directory]::GetAccessControl($Path) }
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid -or -not $acl.AreAccessRulesProtected) { throw '任务目录所有者/继承不符合私有目录约束。' }
     foreach ($entry in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
@@ -159,6 +169,28 @@ function Get-SjcContextConfiguration {
     }
     throw '上下文不是本实现创建的可信上下文。'
 }
+function Get-SjcRuleContextConfiguration {
+    param($Context)
+    if (Get-Variable -Scope Script -Name SjcInventoryContexts -ErrorAction SilentlyContinue) {
+        foreach($entry in $script:SjcInventoryContexts) {
+            if ([object]::ReferenceEquals($entry.Context,$Context)) {
+                if ($Context.CleaningProfile -cne $entry.CleaningProfile) { throw '只读上下文档位被直接修改，请使用 Set-SjcCleaningProfile。' }
+                return $entry
+            }
+        }
+    }
+    return (Get-SjcContextConfiguration $Context)
+}
+function New-SjcRuleInventoryContext {
+    param($CleaningProfile='Medium')
+    Assert-SjcCleaningProfile $CleaningProfile
+    if (-not (Get-Variable -Scope Script -Name SjcInventoryContexts -ErrorAction SilentlyContinue)) { $script:SjcInventoryContexts=New-Object 'System.Collections.Generic.List[object]' }
+    $context=[pscustomobject]@{Version=(Get-SjcVersion);StateRoot='';Rules=@();CleaningProfile=$CleaningProfile}
+    $configuration=[pscustomobject]@{Context=$context;IsTest=$false;InventoryOnly=$true;CleaningProfile=$CleaningProfile;ProfileEpoch=0}
+    [void]$script:SjcInventoryContexts.Add($configuration)
+    $context.Rules=@(Get-SjcRules -Context $context)
+    return $context
+}
 function Assert-SjcCleaningProfile {
     param($CleaningProfile)
     if ($CleaningProfile -isnot [string] -or $CleaningProfile -cnotin @('Low','Medium','High')) { throw 'CleaningProfile 必须为 Low、Medium 或 High（区分大小写）；旧档位须重新扫描。' }
@@ -166,7 +198,12 @@ function Assert-SjcCleaningProfile {
 function Set-SjcCleaningProfile {
     param([Parameter(Mandatory=$true)]$Context,[Parameter(Mandatory=$true)]$CleaningProfile,[switch]$Invalidate)
     Assert-SjcCleaningProfile $CleaningProfile
-    $configuration=Get-SjcContextConfiguration $Context
+    $configuration=Get-SjcRuleContextConfiguration $Context
+    if ($configuration.PSObject.Properties['InventoryOnly'] -and $configuration.InventoryOnly) {
+        $configuration.CleaningProfile=$CleaningProfile; $configuration.ProfileEpoch++
+        $Context.CleaningProfile=$CleaningProfile; $Context.Rules=@(Get-SjcRules $Context)
+        return
+    }
     if ($configuration.CleaningProfile -ceq $CleaningProfile -and -not $Invalidate) { return }
     # Deny old plans even after switching back. Marker is denial-only, never approval.
     foreach($task in $configuration.TaskDirectories) {
@@ -179,12 +216,30 @@ function Set-SjcCleaningProfile {
     $Context.CleaningProfile=$CleaningProfile
     $Context.Rules=@(Get-SjcRules $Context)
 }
+# Explicit in-process test guard: denial-only, never enabled by environment/payload.
+function Enable-SjcTestIsolation {
+    param([Parameter(Mandatory=$true)][string]$ParentDirectory)
+    $parent=Get-SjcFullPath $ParentDirectory
+    $production=Get-SjcProductionStateRoot
+    if ((Test-SjcPathWithin $parent $production -AllowRoot) -or (Test-SjcPathWithin $production $parent -AllowRoot) -or $parent.Length -le 3) { throw '测试父目录不能覆盖正式状态或驱动器根。' }
+    if (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) {
+        if ($parent -cne $script:SjcTestIsolationParent) { throw '隔离父目录已锁定，禁止切换。' }
+        Assert-SjcPrivateDirectory $parent
+        return
+    }
+    if ([IO.Directory]::Exists($parent) -or [IO.File]::Exists($parent)) { throw '首次隔离父目录必须是不存在的新目录，禁止修改既有目录权限。' }
+    Set-SjcPrivateDirectory $parent
+    $script:SjcTestIsolationParent=$parent
+}
 function New-SjcContext {
     param([string]$TestRoot,$CleaningProfile='Medium')
     Assert-SjcCleaningProfile $CleaningProfile
     $isTest = -not [string]::IsNullOrWhiteSpace($TestRoot)
     if ($isTest) { $TestRoot=Get-SjcFullPath $TestRoot; Assert-SjcSandbox $TestRoot; $state = Join-Path $TestRoot 'state' }
-    else { $state = Get-SjcProductionStateRoot }
+    else {
+        if (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) { throw '隔离测试禁止创建正式上下文；必须使用本进程注册的 TestRoot。' }
+        $state = Get-SjcProductionStateRoot
+    }
     Set-SjcPrivateDirectory $state
     $context = [pscustomobject]@{ Version=(Get-SjcVersion); StateRoot=$state; Rules=@(); CleaningProfile=$CleaningProfile }
     $configuration = [pscustomobject]@{ Context=$context; StateRoot=$state; IsTest=$isTest; TestRoot=$TestRoot; CleaningProfile=$CleaningProfile; ProfileEpoch=0; TaskDirectories=(New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)) }
@@ -193,8 +248,17 @@ function New-SjcContext {
     return $context
 }
 function New-SjcTestSandbox {
-    $parent = Join-Path (Get-SjcProductionStateRoot) 'Sandboxes'
-    Set-SjcPrivateDirectory $parent
+    param([string]$ParentDirectory='')
+    if ([string]::IsNullOrWhiteSpace($ParentDirectory)) {
+        if (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) { $ParentDirectory=$script:SjcTestIsolationParent }
+        else { $ParentDirectory=Join-Path ([IO.Path]::GetTempPath()) ('SafeJunkCleaner-IsolatedTests-' + [guid]::NewGuid().ToString('D')) }
+    }
+    $parent=Get-SjcFullPath $ParentDirectory
+    $production=Get-SjcProductionStateRoot
+    if ((Test-SjcPathWithin $parent $production -AllowRoot) -or (Test-SjcPathWithin $production $parent -AllowRoot) -or $parent.Length -le 3) { throw '沙箱父目录不能覆盖正式状态或驱动器根。' }
+    if ((Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) -and $parent -cne $script:SjcTestIsolationParent) { throw '沙箱父目录不属于本次隔离运行。' }
+    if (-not (Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue)) { Enable-SjcTestIsolation -ParentDirectory $parent }
+    Assert-SjcPrivateDirectory $parent
     $root = Join-Path $parent ([guid]::NewGuid().ToString('D'))
     Set-SjcPrivateDirectory $root
     $token = [guid]::NewGuid().ToString('N')
@@ -208,6 +272,9 @@ function Assert-SjcSandbox {
     param([string]$Root)
     $Root = Get-SjcFullPath $Root
     if (-not (Get-Variable -Scope Script -Name SjcSandboxes -ErrorAction SilentlyContinue) -or -not $script:SjcSandboxes.ContainsKey($Root)) { throw 'TestRoot 必须是本进程自建并注册的 GUID 沙箱。' }
+    $guid=[guid]::Empty
+    if (-not [guid]::TryParseExact([IO.Path]::GetFileName($Root),'D',[ref]$guid)) { throw '沙箱根名称必须为 GUID。' }
+    if ((Get-Variable -Scope Script -Name SjcTestIsolationParent -ErrorAction SilentlyContinue) -and [IO.Path]::GetDirectoryName($Root) -cne $script:SjcTestIsolationParent) { throw '沙箱不属于当前隔离运行。' }
     Assert-SjcPrivateDirectory $Root
     $owner = Unprotect-SjcText (Read-SjcSafeText (Join-Path $Root '.sandbox-owner'))
     if ($owner -cne ($Root + '|' + $script:SjcSandboxes[$Root])) { throw '沙箱所有权标记无效。' }
@@ -508,7 +575,8 @@ function Invoke-SjcScan {
         $stream=[IO.File]::Open($plan,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
         $writer=[IO.StreamWriter]::new($stream,[Text.UTF8Encoding]::new($false),4096,$true)
         $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-        $clock=[Diagnostics.Stopwatch]::StartNew(); $cancelled=$false; $now=[datetime]::UtcNow
+        $clock=[Diagnostics.Stopwatch]::StartNew(); $cancelled=$false; $now=[datetime]::UtcNow; [int64]$reviewed=0
+        Write-SjcProgress $progress '正在检查扫描范围（未删除文件）' $reviewed $result.CandidateCount $clock -Force
         foreach($root in @($groups.Keys | Sort-Object)) {
             # Immutable operation-local rule grouping; no cached filesystem/process verdicts.
             $rootPairs=$groups[$root].ToArray()
@@ -527,6 +595,9 @@ function Invoke-SjcScan {
                             if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw '跳过重解析条目。' }
                             if ($entry -is [IO.DirectoryInfo]) { $queue.Enqueue($path); continue }
                             if ($entry -isnot [IO.FileInfo]) { continue }
+                            # Count actual regular file observations, including age/pattern rejections.
+                            # A shared rule root is enumerated once; directories are not files.
+                            $reviewed++
                             foreach($pair in $rootPairs) {
                                 if (-not (Test-SjcRuleFile $pair.Rule $entry $now)) { continue }
                                 if (-not (Test-SjcRuleConfiguration $pair.Rule)) { $pair.Category.Status='UnsupportedConfiguration'; $pair.Category.Note='覆盖配置或授权已变化；停止接纳此规则的候选。'; continue }
@@ -549,7 +620,7 @@ function Invoke-SjcScan {
                             Add-SjcWarning $result ($entry.FullName + ': ' + $_.Exception.Message)
                             foreach($pair in $rootPairs) { $pair.Category.Status='Partial' }
                         }
-                        Write-SjcProgress $progress '正在扫描候选（未删除文件）' 0 $result.CandidateCount $clock
+                        Write-SjcProgress $progress '正在扫描候选（未删除文件）' $reviewed $result.CandidateCount $clock
                     }
                 } catch {
                     Add-SjcWarning $result ($folder + ': ' + $_.Exception.Message)
@@ -569,7 +640,7 @@ function Invoke-SjcScan {
         $meta=[ordered]@{ Version=(Get-SjcVersion); PolicyRevision=3; DiscoveryScopeSeal=(Get-SjcDiscoveryScopeSeal $Context); CleaningProfile=$configuration.CleaningProfile; CustomEnabled=$CustomEnabled; RuleIds=@($rules | ForEach-Object Id); ProfileEpoch=$configuration.ProfileEpoch; SchemaVersion=(Get-SjcPlanSchemaVersion); TaskId=$result.TaskId; TaskDirectory=$task; IsTest=$configuration.IsTest; Status=$result.Status; CreatedUtc=[datetime]::UtcNow.ToString('o'); PlanFile='candidates.jsonl'; PlanHash=$hash; PlanLength=$stream.Length; CandidateCount=$result.CandidateCount; CandidateBytes=$result.CandidateBytes; Rules=@($rules | ForEach-Object { Get-SjcRuleSeal $_ }) }
         Write-SjcAtomicText -Path (Join-Path $task 'scan.meta.json') -Text (Protect-SjcText ($meta | ConvertTo-Json -Depth 8 -Compress)) -NoOverwrite
         $result.PlanPath=$plan
-        Write-SjcProgress $progress '扫描结束' 0 $result.CandidateCount $clock -Force
+        Write-SjcProgress $progress '扫描结束' $reviewed $result.CandidateCount $clock -Force
     } catch { $result.Status='Failed'; $result.Error=$_.Exception.Message }
     finally { if ($null -ne $writer) { $writer.Dispose() }; if ($null -ne $stream) { $stream.Dispose() }; if ($lease) { $lease.Dispose() } }
     if (-not $result.LogPath) { $result.Status='Failed'; if (-not $result.Error) { $result.Error='未能创建操作日志。' } }
@@ -828,6 +899,12 @@ function Invoke-SjcClean {
         if ($count -ne $plan.Metadata.CandidateCount -or $bytes -ne $plan.Metadata.CandidateBytes) { throw '计划汇总校验失败。' }
         foreach($id in $excluded) { if (-not $ids.Contains($id)) { throw '排除项不属于本次计划。' } }
         $reader.Dispose(); $reader=$null; $plan.Stream.Position=0
+        $testConfiguration=Get-SjcContextConfiguration $Context
+        if ($testConfiguration.IsTest) {
+            Assert-SjcSandbox $testConfiguration.TestRoot
+            Write-SjcAtomicText -Path (Join-Path $task 'test-deletion-manifest.json') -Text ([ordered]@{TestRoot=$testConfiguration.TestRoot; TaskDirectory=$task; Paths=@($paths); RecycleMode=$RecycleMode; CreatedUtc=[datetime]::UtcNow.ToString('o')} | ConvertTo-Json -Depth 5) -NoOverwrite
+            $plan.Stream.Position=0
+        }
         # Single-use claim persists even on cancellation/failure: no silent replay of a stale snapshot.
         $claim=[IO.File]::Open((Join-Path $task 'clean.claimed'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         $claim.Dispose(); $claim=$null
@@ -857,7 +934,11 @@ function Invoke-SjcClean {
                 $probe=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
                 $probe.Dispose()
                 if (-not (Test-SjcNoReparsePath $path) -or (Get-SjcFileIdentity $path) -cne $candidate.FileIdentity) { throw '删除前路径或身份复核失败。' }
-                if ($RecycleMode) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path,[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin) }
+                if ($testConfiguration.IsTest) {
+                    Assert-SjcSandbox $testConfiguration.TestRoot
+                    if (-not (Test-SjcPathWithin $path (Join-Path $testConfiguration.TestRoot 'files'))) { throw '测试删除目标不属于自有 files 目录。' }
+                }
+                if ($RecycleMode) { Move-SjcFileToRecycleBin -Context $Context -Path $path }
                 else { [IO.File]::Delete($path) }
                 $result.Deleted++; $result.ProcessedBytes += [int64]$candidate.Length
             } catch { $result.Skipped++; Add-SjcCleanError $result ($candidate.Path + ': ' + $_.Exception.Message) }
@@ -874,6 +955,12 @@ function Invoke-SjcClean {
     }
     if (-not $result.LogPath) { $result.Status='Failed'; if (-not $result.Error) { $result.Error='未能创建操作日志。' } }
     return $result
+}
+function Move-SjcFileToRecycleBin {
+    param($Context,[string]$Path)
+    $configuration=Get-SjcContextConfiguration $Context
+    if ($configuration.IsTest) { throw '测试上下文禁止真实回收站；测试必须安装显式替身。' }
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path,[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
 }
 function Get-SjcRecycleStatus {
     param([uint32]$Code)
@@ -928,6 +1015,40 @@ function Remove-SjcTaskDirectory {
         foreach($lease in $leases) { $lease.Dispose() }
         [IO.File]::Delete($deletingPath)
         throw
+    }
+    # Test contexts retain the whole authenticated flat metadata directory instead
+    # of deleting it. Completion, tombstone, lease and no-link gates above remain
+    # identical; production metadata removal below is unchanged.
+    $configuration=Get-SjcContextConfiguration $Context
+    if ($configuration.IsTest) {
+        try {
+            Assert-SjcSandbox $configuration.TestRoot
+            $taskIdentity=[SjcV3.Native]::ReadIdentity($task).Key
+            $retainedParent=Join-Path $configuration.StateRoot 'RetainedTasks'
+            Set-SjcPrivateDirectory $retainedParent
+            $id=[guid]::NewGuid().ToString('D')
+            $destination=Join-Path $retainedParent $id
+            $manifestFiles=@(foreach($path in $files) {
+                # Lease files are already exclusively held and must not be reopened.
+                $name=[IO.Path]::GetFileName($path)
+                [pscustomobject]@{Name=$name;Identity=$(if($name -notin @('core.active','worker.active')){Get-SjcFileIdentity $path});SHA256=$(if($name -notin @('core.active','worker.active')){(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash})}
+            })
+            Write-SjcAtomicText -Path (Join-Path $retainedParent ($id+'.manifest.json')) -Text ([ordered]@{Source=$task;Destination=$destination;TestRoot=$configuration.TestRoot;DirectoryIdentity=$taskIdentity;Files=$manifestFiles;CreatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 6) -NoOverwrite
+            foreach($lease in $leases) { $lease.Dispose() }
+            [void](Assert-SjcTaskDirectory $Context $task)
+            if ([SjcV3.Native]::ReadIdentity($task).Key -cne $taskIdentity -or @([IO.Directory]::GetDirectories($task)).Count -gt 0) { throw '保留前任务目录身份或结构变化。' }
+            $currentFiles=@([IO.Directory]::GetFiles($task))
+            if (($files|Sort-Object|ConvertTo-Json -Compress) -cne ($currentFiles|Sort-Object|ConvertTo-Json -Compress)) { throw '保留前任务文件集合变化。' }
+            foreach($record in $manifestFiles) {
+                $path=Join-Path $task $record.Name
+                if (-not (Test-SjcNoReparsePath $path)) { throw '保留前任务文件包含链接。' }
+                $identity=Get-SjcFileIdentity $path
+                if ($record.Identity -and ($identity -cne $record.Identity -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $record.SHA256)) { throw '保留前任务文件身份或内容变化。' }
+            }
+            [IO.Directory]::Move($task,$destination)
+            [void]$configuration.TaskDirectories.Remove($task)
+            return $true
+        } finally { foreach($lease in $leases) { $lease.Dispose() } }
     }
     # Tombstone blocks new workers while existing leases were proved idle.
     foreach($lease in $leases) { $lease.Dispose() }

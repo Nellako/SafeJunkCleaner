@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\engine\Explorer.Core\ObservedSpaceIndex.cs" Link="Core\ObservedSpaceIndex.cs" />
+    <Compile Include="..\..\engine\Explorer.Core\OpaqueCursorCodec.cs" Link="Core\OpaqueCursorCodec.cs" />
+  </ItemGroup>
+</Project>

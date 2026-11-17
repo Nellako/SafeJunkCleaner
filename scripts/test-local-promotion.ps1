@@ -1,15 +1,20 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([switch]$KeepSandbox)
+param([switch]$KeepSandbox,[string]$FixtureParent)
 . (Join-Path $PSScriptRoot 'local-promotion-common.ps1')
 Assert-LpEnvironment
-$homePath=Join-Path ([IO.Path]::GetTempPath()) ('sjc-promotion-test-'+[guid]::NewGuid().ToString('N'))
+if (-not $FixtureParent) { $FixtureParent=[IO.Path]::GetTempPath() }
+$FixtureParent=Get-LpPath $FixtureParent -Directory
+$homePath=Join-Path $FixtureParent ('l-'+[guid]::NewGuid().ToString('N'))
+if (Test-Path -LiteralPath $homePath) { throw 'Owned test directory must be new.' }
 $null=[IO.Directory]::CreateDirectory($homePath)
+[IO.File]::WriteAllText((Join-Path $homePath '.test-fixture-owner'),$homePath,[Text.UTF8Encoding]::new($true))
 $source=Join-Path $homePath '开发 develop'; $target=Join-Path $homePath '主线 main'; $evidence=Join-Path $homePath 'evidence'
 foreach ($p in @($source,$target,$evidence)) { $null=[IO.Directory]::CreateDirectory($p) }
 $promote=Join-Path $PSScriptRoot 'promote-local.ps1'; $seal=Join-Path $PSScriptRoot 'seal-local-promotion.ps1'
 $script:passed=0
 function Write-TestText([string]$Path,[string]$Text) {
+    if (-not [IO.Path]::GetFullPath($Path).StartsWith($homePath+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Not an owned test path.' }
     $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path))
     [IO.File]::WriteAllText($Path,$Text,[Text.UTF8Encoding]::new($true))
 }
@@ -25,10 +30,17 @@ function Expect-Blocked([scriptblock]$Action,[string]$Reason) {
 }
 function Commit-Test([string]$Repo,[string]$Message) {
     # 仅本脚本创建的 GUID 沙箱允许测试提交。
-    if (-not $Repo.StartsWith($homePath+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Not owned test repository.' }
+    if ($Repo -notin @($source,$target) -or -not $Repo.StartsWith($homePath+'\',[StringComparison]::OrdinalIgnoreCase) -or [IO.File]::ReadAllText((Join-Path $homePath '.test-fixture-owner')) -cne $homePath) { throw 'Not owned test repository.' }
     $null=Invoke-LpGit $Repo @('add','--all')
     $null=Invoke-LpGit $Repo @('-c','user.name=Local promotion test','-c','user.email=local-test@example.invalid','commit','-m',$Message)
     return ((Invoke-LpGit $Repo @('rev-parse','HEAD')) -join '')
+}
+function Retain-TestPath([string]$Path) {
+    $full=Get-LpPath $Path
+    if (-not $full.StartsWith($homePath+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Cannot retain non-owned fixture.' }
+    $destination=Join-Path $evidence ('retained-'+[guid]::NewGuid().ToString('N'))
+    Write-TestJson ($destination+'.json') @{Source=$full;Destination=$destination;Retained=$true}
+    if ([IO.Directory]::Exists($full)) { [IO.Directory]::Move($full,$destination) } else { [IO.File]::Move($full,$destination) }
 }
 try {
     Test-Case 'cloud tag allowlist excludes redirections and unknown tags' {
@@ -43,7 +55,7 @@ try {
     Test-Case 'actual owned junction path rejected' {
         $link=Join-Path $homePath 'junction'
         $null=New-Item -ItemType Junction -Path $link -Target $evidence
-        try { Expect-Blocked { Get-LpPath $link -Directory } 'Reparse redirection' } finally { [IO.Directory]::Delete($link) }
+        Expect-Blocked { Get-LpPath $link -Directory } 'Reparse redirection'
     }
     $null=Invoke-LpGit $source @('init','-b','develop')
     $null=Invoke-LpGit $source @('config','core.autocrlf','false')
@@ -116,40 +128,40 @@ try {
     }
     Test-Case 'dirty source blocked' {
         $p=Join-Path $source 'untracked.txt'; Write-TestText $p 'dirty'
-        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { Retain-TestPath $p }
     }
     Test-Case 'dirty target index blocked' {
         $p=Join-Path $target 'untracked.txt'; Write-TestText $p 'dirty'
-        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { Retain-TestPath $p }
     }
     Test-Case 'staged target index blocked' {
         $p=Join-Path $target 'staged.txt'; Write-TestText $p 'staged'
         $null=Invoke-LpGit $target @('add','staged.txt')
-        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { $null=Invoke-LpGit $target @('rm','--cached','staged.txt'); [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Dirty' } finally { $null=Invoke-LpGit $target @('rm','--cached','staged.txt'); Retain-TestPath $p }
     }
     Test-Case 'uncommitted source cannot capture acceptance inputs' {
         $p=Join-Path $source 'pending.txt'; Write-TestText $p 'pending'
-        try { Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -OutputPath (Join-Path $evidence 'uncommitted.json') -CaptureBuildInputs -Confirm:$false } 'Dirty' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $seal -SourceRepository $source -ExpectedSourceHead $next -OutputPath (Join-Path $evidence 'uncommitted.json') -CaptureBuildInputs -Confirm:$false } 'Dirty' } finally { Retain-TestPath $p }
     }
     Test-Case 'unrelated ignored target metadata allowed' {
         $p=Join-Path $target 'ignored/file.txt'; Write-TestText $p 'precious'
-        try { if ((& $promote @common).Status -ne 'Ready') { throw 'Unrelated ignored file blocked' } } finally { Remove-Item (Join-Path $target 'ignored') -Recurse -Force }
+        if ((& $promote @common).Status -ne 'Ready') { throw 'Unrelated ignored file blocked' }
     }
     Test-Case 'same-path ignored target file blocked' {
         $p=Join-Path $target 'incoming-same.txt'; Write-TestText $p 'precious'
-        try { Expect-Blocked { & $promote @common } 'Ignored path conflicts' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Ignored path conflicts' } finally { Retain-TestPath $p }
     }
     Test-Case 'ignored parent file blocks incoming child path' {
         $p=Join-Path $target 'incoming-child'; Write-TestText $p 'precious'
-        try { Expect-Blocked { & $promote @common } 'Ignored path conflicts' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Ignored path conflicts' } finally { Retain-TestPath $p }
     }
     Test-Case 'ignored directory with child blocks incoming parent file' {
         $p=Join-Path $target 'incoming-parent/file.txt'; Write-TestText $p 'precious'
-        try { Expect-Blocked { & $promote @common } 'Ignored directory conflicts' } finally { Remove-Item (Join-Path $target 'incoming-parent') -Recurse -Force }
+        try { Expect-Blocked { & $promote @common } 'Ignored directory conflicts' } finally { Retain-TestPath (Join-Path $target 'incoming-parent') }
     }
     Test-Case 'unfinished merge blocked' {
         $p=Join-Path $target '.git/MERGE_HEAD'; Write-TestText $p $base
-        try { Expect-Blocked { & $promote @common } 'Unfinished' } finally { [IO.File]::Delete($p) }
+        try { Expect-Blocked { & $promote @common } 'Unfinished' } finally { Retain-TestPath $p }
     }
     Test-Case 'same and nested identity rejected' {
         Expect-Blocked { Assert-LpSeparate $source $source } 'Same or nested'
@@ -213,6 +225,7 @@ try {
     $changed=Commit-Test $source 'synthetic source moved'
     Test-Case 'source moved invalidates commit binding' { Expect-Blocked { & $promote @common } 'not bound' }
     Write-Output "RESULT passed=$script:passed sandbox=$homePath (synthetic fixtures only; no product regression/GUI certification)"
+    Write-TestJson (Join-Path $homePath 'result.json') @{Status='Passed';Assertions=$script:passed;FixtureDirectory=$homePath;SyntheticOnly=$true;Retained=$true;Version='0.12.0'}
 } finally {
-    if (-not $KeepSandbox -and [IO.Directory]::Exists($homePath)) { Remove-Item -LiteralPath $homePath -Recurse -Force }
+    Write-Output ('Fixture retained (success or failure): '+$homePath)
 }
