@@ -7,6 +7,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!-- Keep local checkout paths out of distributed PDB references. -->
     <Deterministic>true</Deterministic>
+    <EnableSourceLink>false</EnableSourceLink>
     <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))=/_/SafeJunkCleaner</PathMap>
     <RuntimeFrameworkVersion Condition="'$(SelfContained)' == 'true'">10.0.15</RuntimeFrameworkVersion>
     <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\artifacts\explorer\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
