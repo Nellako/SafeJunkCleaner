@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Repository)
+﻿param([Parameter(Mandatory=$true)][string]$Repository)
 $ErrorActionPreference='Stop'
 $base=Join-Path $Repository 'artifacts\explorer';$run=Join-Path $base ('host-integration-'+[guid]::NewGuid().ToString('D'));[void][IO.Directory]::CreateDirectory($run)
 $local=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ('SafeJunkCleaner-HostTests\'+[guid]::NewGuid().ToString('D'));[void][IO.Directory]::CreateDirectory($local)

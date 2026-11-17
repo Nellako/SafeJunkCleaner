@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Repository)
+﻿param([Parameter(Mandatory=$true)][string]$Repository)
 $ErrorActionPreference='Stop'
 $base=Join-Path $Repository 'artifacts\explorer'
 $env:DOTNET_ROOT=Join-Path $base 'toolchain\sdk';$env:DOTNET_CLI_HOME=Join-Path $base 'home'

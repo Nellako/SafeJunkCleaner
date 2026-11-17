@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Repository)
+﻿param([Parameter(Mandatory=$true)][string]$Repository)
 $ErrorActionPreference='Stop'
 $base=Join-Path $Repository 'artifacts\explorer'
 $run=Join-Path $base ('selftest-'+[guid]::NewGuid().ToString('D'))

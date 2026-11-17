@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Repository,[switch]$Locked)
+﻿param([Parameter(Mandatory=$true)][string]$Repository,[switch]$Locked)
 $ErrorActionPreference='Stop'
 $root=Join-Path $Repository 'artifacts\explorer'
 foreach($name in @('execution-home','execution-nuget','execution-cache','execution-temp','evidence')){[void][IO.Directory]::CreateDirectory((Join-Path $root $name))}
