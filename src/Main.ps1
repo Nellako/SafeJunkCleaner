@@ -28,7 +28,7 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 # <SJC-MODULES>
 
 if (-not (Get-Command Start-SjcGui -ErrorAction SilentlyContinue)) {
-    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1','ExplorerGui.ps1')) {
+    foreach ($moduleName in @('Version.ps1','Rules.ps1','Core.ps1','Discovery.ps1','Maintenance.ps1','Worker.ps1','Gui.ps1','ExplorerGui.ps1','QuickCleanGuiBridge.ps1')) {
         . (Join-Path $PSScriptRoot $moduleName)
     }
 }
@@ -42,6 +42,7 @@ if ($WorkerMode -eq 'Gui') {
     Start-SjcGui
 } else {
     try {
+        if($WorkerMode -ne 'SelfTest'){throw '旧版 PowerShell Worker 命令已停用。请通过主窗口启动独立 QuickClean 后端。'}
         $result = Invoke-SjcWorker -Mode $WorkerMode -PayloadPath $PayloadPath -OutputPath $OutputPath -SelfTestParentDirectory $SelfTestParentDirectory
         if ($null -eq $result) { throw 'Worker returned no result.' }
         if (-not $script:SjcIsPackaged) { $result | ConvertTo-Json -Depth 12 -Compress | Write-Output }

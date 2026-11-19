@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>sjc-quickclean</AssemblyName><Version>0.17.0-beta.1</Version><RootNamespace>SafeJunkCleaner.QuickClean</RootNamespace></PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="QuickClean.Verification" /></ItemGroup>
+</Project>

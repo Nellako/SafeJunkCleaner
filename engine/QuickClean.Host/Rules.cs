@@ -1,0 +1,41 @@
+using System.Diagnostics;
+using System.IO.Enumeration;
+using System.Text.RegularExpressions;
+using System.Text.Json;
+namespace SafeJunkCleaner.QuickClean;
+
+internal sealed record Rule(string Id,string Root,int Level,int Age,string Processes="",string Pattern="*",string Override="",string Binding="",string Template=""){
+    public string Guard(){if(Binding==""&&Override.Split(',',StringSplitOptions.RemoveEmptyEntries).Any(k=>!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(k))))return "UnsupportedConfiguration";
+        foreach(string name in Processes.Split(',',StringSplitOptions.RemoveEmptyEntries)){Process[] procs=Process.GetProcessesByName(name);try{if(procs.Length!=0)return name is "msedgewebview2" or "java" or "node" or "python" or "pythonw" or "javaw"?"ProcessGuardUnknown":"RunningProcess";}finally{foreach(var p in procs)p.Dispose();}}return "Success";}
+    public bool Matches(FileInfo f,DateTime now)=>Store.Within(Store.Canon(f.FullName),Root)&&(f.Attributes&(FileAttributes.ReadOnly|FileAttributes.Directory|FileAttributes.ReparsePoint|FileAttributes.Offline))==0&&
+        !Regex.IsMatch(f.FullName,@"\\(OfficeFileCache|Service Worker|CacheStorage)\\|\\\.m2\\repository\\|(?:-wal|-shm|\.wal|\.shm)$",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant)&&
+        FileSystemName.MatchesSimpleExpression(Pattern,f.Name,true)&&f.LastWriteTimeUtc<=now.AddHours(-Age)&&(Binding==""||Layout(Template,Path.GetRelativePath(Root,f.FullName)));
+    public static bool Layout(string template,string rel){if(template=="NuGetCache")return Regex.IsMatch(rel,@"^[0-9a-f]{40}\$[^\\/:*?""<>|]+\\(?:service_index|list_[A-Za-z0-9_.+-]+|nupkg_[A-Za-z0-9_.+-]+)\.dat$");
+        if(template=="PipWheelCache")return Regex.IsMatch(rel,@"^(?:[0-9a-f]{2}\\){3}[0-9a-f]{50}\\[A-Za-z0-9_.+!-]+\.whl$");
+        var p=rel.Split('\\');return p.Length==6 && Regex.IsMatch(rel,template=="PipHttpV2Cache"?@"^(?:[0-9a-f]\\){5}[0-9a-f]{56}(?:\.body)?$":@"^(?:[0-9a-f]\\){5}[0-9a-f]{56}$") && p[5].StartsWith(string.Concat(p.Take(5)),StringComparison.Ordinal);}
+}
+internal static class Rules {
+    public static int Level(string p)=>p switch{"Low"=>1,"Medium"=>2,"High"=>3,_=>throw new InvalidDataException("UnknownProfile")};
+    public static Dictionary<string,Rule> Get(string profile,string state,string? fixture){int level=Level(profile);var rules=new Dictionary<string,Rule>(StringComparer.Ordinal);
+        void Add(string id,string root,int minLevel,int age,int high,string processes="",string pat="*",string env=""){rules.Add(id,new(id,root,minLevel,level==3?high:age,processes,pat,env));}
+        if(fixture!=null){Add("SandboxOld",fixture,1,24,24,"","*.tmp");Add("SandboxLog",fixture,2,48,48,"","*.log");return rules;}
+        string l=Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),r=Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),u=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),w=Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        Add("UserTemp",Path.Combine(l,"Temp"),1,24,6);Add("WindowsTemp",Path.Combine(w,"Temp"),2,48,24);Add("VSCodeCache",Path.Combine(r,@"Code\Cache"),2,48,0,"Code");Add("VSCodeCodeCache",Path.Combine(r,@"Code\CachedData"),2,168,0,"Code");Add("GradleCache",Path.Combine(u,@".gradle\caches"),3,720,168,"java,javaw,gradle,studio,studio64,idea,idea64,Code");
+        foreach(var (id,path,proc,env) in new[]{("NpmCache",@"npm-cache\_cacache","node","NPM_CONFIG_CACHE"),("NuGetCache",@"NuGet\v3-cache","dotnet,nuget,MSBuild,devenv","NUGET_HTTP_CACHE_PATH"),("PipHttpCache",@"pip\Cache\http","python,pythonw,pip,pip3,uv","PIP_CACHE_DIR"),("PipHttpV2Cache",@"pip\Cache\http-v2","python,pythonw,pip,pip3,uv","PIP_CACHE_DIR"),("PipWheelCache",@"pip\Cache\wheels","python,pythonw,pip,pip3,uv","PIP_CACHE_DIR"),("YarnCache",@"Yarn\Cache\v6","node","YARN_CACHE_FOLDER"),("GoBuildCache",@"go-build","go,compile,link,gopls","GOCACHE,GOCACHEPROG,GOENV")})Add(id,Path.Combine(l,path),3,168,24,proc,"*",env);
+        foreach(var (id,path) in new[]{("D3DSCache","D3DSCache"),("NvidiaDXCache",@"NVIDIA\DXCache"),("NvidiaGLCache",@"NVIDIA\GLCache"),("AmdDxCache",@"AMD\DxCache"),("AmdDxcCache",@"AMD\DxcCache"),("IntelShaderCache",@"Intel\ShaderCache")})Add(id,Path.Combine(l,path),2,168,168);
+        foreach(var leaf in new[]{"Cache","GPUCache"})Add("Teams"+leaf,Path.Combine(r,@"Microsoft\Teams",leaf),2,168,leaf=="GPUCache"?0:24,"Teams,ms-teams");
+        foreach(var leaf in new[]{"Cache","Code Cache","GPUCache"})Add("NewTeams"+leaf.Replace(" ",""),Path.Combine(l,@"Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\WV2Profile_tfw",leaf),leaf=="Code Cache"?3:2,168,0,"ms-teams,Teams,msedgewebview2");
+        Add("SteamHtmlCache",Path.Combine(l,@"Steam\htmlcache"),2,168,24,"steam,steamwebhelper");Add("CrashDumps",Path.Combine(l,"CrashDumps"),3,720,720,"","*.dmp");Add("WERArchive",Path.Combine(l,@"Microsoft\Windows\WER\ReportArchive"),3,720,720,"WerFault,WerFaultSecure,wermgr");
+        foreach(var (id,pat) in new[]{("ExplorerThumbCache","thumbcache_*.db"),("ExplorerIconCache","iconcache_*.db")})Add(id,Path.Combine(l,@"Microsoft\Windows\Explorer"),4,168,168,"explorer",pat);
+        foreach(var (brand,baseDir,proc) in new[]{("Chrome",@"Google\Chrome\User Data","chrome"),("Edge",@"Microsoft\Edge\User Data","msedge"),("Brave",@"BraveSoftware\Brave-Browser\User Data","brave"),("Firefox",@"Mozilla\Firefox\Profiles","firefox")}){
+            var dir=Path.Combine(l,baseDir);if(!Directory.Exists(dir))continue;try{Store.Plain(dir);foreach(string p in Directory.GetDirectories(dir)){Store.Plain(p);string n=Path.GetFileName(p);if(brand=="Firefox"){if(Regex.IsMatch(n,@"^[a-z0-9]{8}\.(default|default-release|default-esr)(-[0-9]{1,14})?$"))Add("FirefoxCache2:"+n,Path.Combine(p,"cache2"),1,24,0,proc);}else if(Regex.IsMatch(n,@"^(Default|Profile [1-9][0-9]{0,5})$")){foreach(var c in new[]{"Cache","GPUCache","Code Cache"})Add(brand+c.Replace(" ","")+":"+n.Replace(' ','_'),Path.Combine(p,c),c=="Cache"?1:2,24,0,proc);}}}catch(IOException){}catch(UnauthorizedAccessException){} }
+        string auth=Path.Combine(state,"cache-authorizations-v1.dpapi");if(!File.Exists(auth))return rules;var doc=Store.Open(auth);Store.Require(doc.GetProperty("Schema").GetInt32()==1,"InvalidCacheAuthorizations");var entries=doc.GetProperty("Entries").EnumerateArray().ToArray();Store.Require(entries.Length<=32,"TooManyAuthorizations");
+        foreach(var (adapter,env,template,leaf) in new[]{("NuGetHttp","NUGET_HTTP_CACHE_PATH","NuGetCache",""),("Pip","PIP_CACHE_DIR","PipHttpCache","http"),("Pip","PIP_CACHE_DIR","PipHttpV2Cache","http-v2"),("Pip","PIP_CACHE_DIR","PipWheelCache","wheels")}){
+            string? v=Environment.GetEnvironmentVariable(env);if(string.IsNullOrWhiteSpace(v))continue;try{string val=Store.Canon(v.TrimEnd('\\')).ToLowerInvariant();var path=leaf==""?val:Path.Combine(val,leaf);Store.Plain(path);if(!Directory.Exists(path)||val.Length<=3||val.Equals(u,StringComparison.OrdinalIgnoreCase))continue;
+                if(new[]{Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),Path.Combine(u,"Downloads"),w,Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),state,Path.GetDirectoryName(AppContext.BaseDirectory.TrimEnd('\\'))!}.Where(x=>x.Length>0).Any(x=>new[]{val,path}.Any(y=>Store.Within(y,x)||Store.Within(x,y)||x.Equals(y,StringComparison.OrdinalIgnoreCase))))continue;
+                string key=$"{adapter}|{env}|{val}|{template}|{path}",id="Discovered:"+Store.Hash(key),binding=Store.Hash(key+"|"+SjcV3.Native.ReadIdentity(path).Key+"|PolicyRevision=3|AdapterRevision=1|AgeBounded|NameGuard");
+                var match=entries.Where(e=>e.Str("Id")==id&&e.Str("Binding")==binding).ToArray();if(match.Length==1&&Regex.IsMatch(match[0].Str("AuthorizationId"),"^[a-f0-9]{32}$"))rules.Add(id,new(id,path,3,level==3?24:168,adapter=="Pip"?"python,pythonw,pip,pip3,uv":"dotnet,nuget,MSBuild,devenv","*",env,binding+match[0].Str("AuthorizationId"),template));
+            }catch(IOException){}catch(UnauthorizedAccessException){} }
+        return rules;
+    }
+}

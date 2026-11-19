@@ -11,6 +11,7 @@ $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'src\Version.ps1')
 $version=Get-SjcVersion
+if ($version -ceq '0.17.0' -and (Get-SjcVersionInfo).channel -cmatch '^beta(?:\.[1-9][0-9]*)?$'){throw 'This beta is a prerelease; use package-candidate.ps1. Stable release requires a separately reviewed gate.'}
 $build=[IO.Path]::GetFullPath($BuildDirectory)
 $verification=[IO.Path]::GetFullPath($VerificationDirectory)
 if ($version -cin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) {

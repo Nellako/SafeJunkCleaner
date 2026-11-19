@@ -8,7 +8,7 @@ $root=Split-Path -Parent $PSScriptRoot
 $metadata=Get-SjcVersionInfo;$version=$metadata.version;$fileVersion=$metadata.fileVersion
 $encoding=[Text.UTF8Encoding]::new($true)
 . (Join-Path $PSScriptRoot 'local-promotion-common.ps1')
-$componentVersion=($version -cin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1'));$noModel=Test-LpNoModelVersion $version
+$noModel=Test-LpNoModelVersion $version;$componentVersion=($noModel -or $version -ceq '0.13.0')
 if ($noModel -and $ModelDirectory) { throw '0.14 ModelMode=Absent forbids ModelDirectory, including old caches.' }
 if (-not $noModel -and [bool]$ExplorerDirectory -ne [bool]$ModelDirectory) { throw '0.13 ExplorerDirectory and ModelDirectory must be supplied together.' }
 if ($ExplorerDirectory -and -not $componentVersion) { throw 'Explicit components are supported only by component versions.' }
@@ -44,6 +44,9 @@ $modules=foreach($relative in $sourceFiles[1..($sourceFiles.Count-1)]){"`r`n# re
 $marker='# <SJC-MODULES>'
 if(($entry.Split(@($marker),[StringSplitOptions]::None)).Count -ne 2){throw 'Expected exactly one module marker.'}
 $embedded='$script:SjcEmbeddedVersion = '+"[pscustomobject]@{version='$version';fileVersion='$fileVersion';planSchemaVersion=$($metadata.planSchemaVersion)}`r`n"
+if($metadata.PSObject.Properties['channel'] -and $metadata.channel -cmatch '^beta(?:\.[1-9][0-9]*)?$'){
+    $embedded += '$script:SjcDisplayVersion = '+"'$version-$($metadata.channel)'`r`n"
+}
 $iconBase64=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root 'assets\app.ico')))
 $embedded += '$script:SjcEmbeddedIconBase64 = '+"'$iconBase64'`r`n"
 if ($componentInputs.Count) {
@@ -52,12 +55,33 @@ if ($componentInputs.Count) {
 }
 $combined=$entry.Replace($marker,$embedded+($modules -join "`r`n"))
 $tokens=$null;$errors=$null
-[void][Management.Automation.Language.Parser]::ParseInput($combined,[ref]$tokens,[ref]$errors)
+$ast=[Management.Automation.Language.Parser]::ParseInput($combined,[ref]$tokens,[ref]$errors)
 if(@($errors).Count){throw "Combined source parse errors: $($errors -join '; ')"}
 $buildId=(Get-Date -Format 'yyyyMMdd_HHmmss')+'_'+[guid]::NewGuid().ToString('N').Substring(0,8)
 $directory=Join-Path $root ("artifacts\builds\$buildId")
 if (Test-Path -LiteralPath $directory) { throw 'Build directory must not already exist.' }
 [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+if ($version -ceq '0.17.0') {
+    # Keep C# source mode for isolated developer tests, but never compile it at
+    # product startup. In WinPS CodeDOM needs a writable, stable TEMP directory.
+    $compilerRoot=Join-Path $root ('artifacts\desktop-bridge-compiler\'+$buildId)
+    [void][IO.Directory]::CreateDirectory($compilerRoot)
+    $compiler=Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
+    $sources=@()
+    foreach($variable in '$nativeSource','$script:SjcExplorerBridgeSource'){
+        $assign=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $variable},$true))
+        if($assign.Count -ne 1){throw "Expected one desktop bridge assignment: $variable"}
+        $p=Join-Path $compilerRoot ('Bridge'+$sources.Count+'.cs')
+        [IO.File]::WriteAllText($p,$assign[0].Right.Expression.SafeGetValue(),$encoding);$sources+=$p
+    }
+    $library=Join-Path $compilerRoot 'SafeJunkCleaner.DesktopBridge.dll'
+    & $compiler /nologo /target:library /optimize+ /debug- /reference:System.Web.Extensions.dll /reference:System.Runtime.Serialization.dll /reference:System.Xml.dll ("/out:"+$library) @sources
+    if($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($library)){throw 'Desktop bridge compilation failed.'}
+    $loader="[void][Reflection.Assembly]::Load([Convert]::FromBase64String('"+[Convert]::ToBase64String([IO.File]::ReadAllBytes($library))+"'))`r`n"
+    $combined=$entry.Replace($marker,$embedded+$loader+($modules -join "`r`n"))
+    [void][Management.Automation.Language.Parser]::ParseInput($combined,[ref]$tokens,[ref]$errors)
+    if(@($errors).Count){throw 'Precompiled desktop bridge script did not parse.'}
+}
 $source=Join-Path $directory "SafeJunkCleaner_v$version.ps1"
 [IO.File]::WriteAllText($source,$combined,$encoding)
 $files=@([pscustomobject]@{Name=[IO.Path]::GetFileName($source);SHA256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash;Bytes=([IO.FileInfo]$source).Length})

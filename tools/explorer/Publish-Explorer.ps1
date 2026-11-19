@@ -45,7 +45,7 @@ function Invoke-ExplorerNative {
 }
 $version=(Get-LpJson (Join-Path $Repository 'version.json')).version
 $noModel=Test-LpNoModelVersion $version;$contract=if ($noModel) { 3 } else { 2 }
-if ($version -cnotin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) { throw 'Unsupported Host publish version.' }
+if (-not $noModel -and $version -cne '0.13.0') { throw 'Unsupported Host publish version.' }
 if ($noModel -and $ResumeBuildId -and -not $SizeProbe) { throw '0.14 final/development publish always uses fresh GUID directories; only an incomplete SizeProbe may resume.' }
 $sourceSnapshot=if ($noModel) { @(Get-LpHostSources $Repository) } else { @(Get-LpWorkingSources $Repository) };$sourceSetHash=Get-LpSourceSetHash $sourceSnapshot
 if($ResumeBuildId -and ![guid]::TryParseExact($ResumeBuildId,'D',[ref]([guid]::Empty))){throw 'Invalid resume build ID'}
@@ -120,7 +120,7 @@ $provenance|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $work 
  foreach($p in $provenance){$file=Join-Path (Join-Path $work 'feed') ($p.Id.ToLowerInvariant()+'.'+$p.Version+'.nupkg');if((Get-FileHash -LiteralPath $file -Algorithm SHA512).Hash -ne $p.Sha512){throw 'Cached runtime pack changed'};$downloaded+=$p.Bytes}
 }
 # Build a byte-identical source copy. RID-specific lock generation never mutates frozen source locks.
-$projects=@('Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host')
+$projects=@(Get-LpHostProjects $Repository)
 if (-not $noModel) { $projects += 'Explorer.Model' }
 $sourceFiles=@(Get-Item -LiteralPath (Join-Path $Repository 'engine\Directory.Build.props'))
 foreach($project in $projects){$sourceFiles+=@(Get-LpCandidateFiles (Join-Path $Repository ('engine\'+$project)) -SourceOnly | Where-Object {$_.Extension -in @('.cs','.csproj','.json')})}
@@ -142,12 +142,20 @@ $remoteXml=if ($AllowPackageDownload) { '<add key="official-nuget" value="https:
 # Original fixed locks are retained in SourceProvenance; RID-specific locks are generated only in the isolated source copy.
 $null=Invoke-ExplorerNative $dotnet (@('restore',$project,'--configfile',$config,'--disable-parallel')+$props) (Join-Path $work 'evidence\restore.log') 'Self-contained restore failed'
 $null=Invoke-ExplorerNative $dotnet (@('restore',$project,'--configfile',$config,'--disable-parallel','--locked-mode')+$props) (Join-Path $work 'evidence\locked-restore.log') 'Locked runtime restore failed'
+if($version -ceq '0.17.0'){
+ $quick=Join-Path $work 'engine/QuickClean.Host/QuickClean.Host.csproj'
+ $null=Invoke-ExplorerNative $dotnet (@('restore',$quick,'--locked-mode','--configfile',$config)+$props) (Join-Path $work 'evidence/quick-restore.log') 'QuickClean locked restore failed'
+}
 foreach($source in $sources){if((Get-FileHash -LiteralPath (Join-Path $Repository $source.Path) -Algorithm SHA256).Hash -ne $source.Sha256){throw 'Frozen sources changed during restore; candidate not sealed'}}
 $locks=@();foreach($p in $projects){$lock=Join-Path $work ('engine\'+$p+'\packages.lock.json');$content=Get-Content -Raw -LiteralPath $lock|ConvertFrom-Json
   foreach ($framework in $content.dependencies.PSObject.Properties) { foreach ($dependency in $framework.Value.PSObject.Properties) { $d=$dependency.Value;if ($d.type -ceq 'Project') { continue };$allowed=@{'Microsoft.NETCore.App.Runtime.win-x64'='10.0.15';'Microsoft.NETCore.App.Host.win-x64'='10.0.15';'Microsoft.Data.Sqlite'='10.0.14';'Microsoft.Data.Sqlite.Core'='10.0.14';'SQLitePCLRaw.core'='2.1.13';'SQLitePCLRaw.bundle_e_sqlite3'='2.1.13';'SQLitePCLRaw.provider.e_sqlite3'='2.1.13';'SQLitePCLRaw.lib.e_sqlite3'='2.1.13'};if (-not $allowed.ContainsKey($dependency.Name) -or $d.resolved -cne $allowed[$dependency.Name]) { throw ('Dependency is outside fixed approved locks: '+$dependency.Name) } } }
  $locks+=@{Project=$p;Sha256=(Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash;Content=$content}}
 if ($noModel) { Assert-LpHostDependencyProvenance ([pscustomobject]@{RuntimePacks=$provenance;LockedRestore=$locks}) $Repository }
 $null=Invoke-ExplorerNative $dotnet (@('publish',$project,'--no-restore','--configuration','Release','--output',$output,'--disable-build-servers')+$props) (Join-Path $work 'evidence\publish.log') 'Self-contained publish failed'
+if($version -ceq '0.17.0'){
+ $qout=Join-Path $work 'quick-publish';$null=Invoke-ExplorerNative $dotnet (@('publish',$quick,'--no-restore','-c','Release','--output',$qout,'--disable-build-servers')+$props) (Join-Path $work 'evidence/quick-publish.log') 'QuickClean publish failed'
+ foreach($f in @(Get-LpCandidateFiles $qout)){$r=$f.FullName.Substring($qout.Length+1);$p=Join-Path $output $r;if([IO.File]::Exists($p)){if((Get-LpHash $p) -ne (Get-LpHash $f.FullName)){throw "Shared runtime bytes differ: $r"}}else{[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($p));[IO.File]::Copy($f.FullName,$p,$false)}}
+}
 foreach($source in $sources){if((Get-FileHash -LiteralPath (Join-Path $Repository $source.Path) -Algorithm SHA256).Hash -ne $source.Sha256){throw 'Frozen sources changed during publish; candidate not sealed'}}
 $licenses=Join-Path $output 'licenses';[void][IO.Directory]::CreateDirectory($licenses)
 foreach($p in @(@('microsoft.netcore.app.runtime.win-x64',$runtimeVersion),@('microsoft.netcore.app.host.win-x64',$runtimeVersion),@('microsoft.data.sqlite','10.0.14'),@('microsoft.data.sqlite.core','10.0.14'),@('sqlitepclraw.core','2.1.13'),@('sqlitepclraw.bundle_e_sqlite3','2.1.13'),@('sqlitepclraw.provider.e_sqlite3','2.1.13'),@('sqlitepclraw.lib.e_sqlite3','2.1.13'))){
@@ -181,13 +189,13 @@ if ($SizeProbe) {
 }
 # Private non-cloud execution root. Never execute binaries inside downloaded package directories.
 $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
-$local=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'SafeJunkCleaner'
+$local=if($version -ceq '0.17.0'){Join-Path $work 'execution-staging'}else{Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'SafeJunkCleaner'}
 if(!(Test-Path -LiteralPath $local)){[void][IO.Directory]::CreateDirectory($local)}
 for($p=$local;$p;$p=[IO.Path]::GetDirectoryName($p)){if(([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Unsafe local staging ancestor'}}
 $staging=Join-Path $local ('explorer-publish-'+$id)
 if(Test-Path -LiteralPath $staging){$staging=Join-Path $local ('explorer-publish-'+$id+'-'+[guid]::NewGuid().ToString('N'))}
 $acl=New-Object Security.AccessControl.DirectorySecurity;$acl.SetOwner($sid);$acl.SetAccessRuleProtection($true,$false);$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
-[void][IO.Directory]::CreateDirectory($staging);[IO.Directory]::SetAccessControl($staging,$acl)
+[void][IO.Directory]::CreateDirectory($staging,$acl)
 $components=@()
 foreach($f in $published){
  $relative=$f.FullName.Substring($output.Length+1);$dest=Join-Path $staging $relative;[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dest))

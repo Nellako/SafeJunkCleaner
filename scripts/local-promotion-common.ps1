@@ -208,12 +208,13 @@ function Assert-LpRecent {
 function Test-LpNoModelVersion {
     param([string]$Version)
     # Explicit capabilities, not an open-ended promise about future versions.
-    return ($Version -cin @('0.14.0','0.15.0','0.16.0','0.16.1'))
+    return ($Version -cin @('0.14.0','0.15.0','0.16.0','0.16.1','0.17.0'))
 }
 function Get-LpProductSources {
     param([string]$Version)
     $sources=@('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Discovery.ps1','src/Maintenance.ps1','src/Worker.ps1','src/Gui.ps1')
-    if ($Version -cin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) { $sources += 'src/ExplorerGui.ps1' }
+    if($Version -ceq '0.17.0'){ $sources+='src/QuickCleanGuiBridge.ps1' }
+    if ($Version -ceq '0.13.0' -or (Test-LpNoModelVersion $Version)) { $sources += 'src/ExplorerGui.ps1' }
     return @($sources + 'version.json')
 }
 
@@ -380,10 +381,14 @@ function Get-LpWorkingSources {
     return @($records | Sort-Object -Property Path -CaseSensitive)
 }
 
+function Get-LpHostProjects([string]$Root){
+    'Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host'
+    if((Get-LpJson (Join-Path $Root 'version.json')).version -ceq '0.17.0'){'QuickClean.Host'}
+}
 function Get-LpHostSources {
     param([string]$Root)
     $files=@(Get-Item -LiteralPath (Join-Path $Root 'engine/Directory.Build.props'))
-    foreach ($project in @('Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host')) {
+    foreach ($project in @(Get-LpHostProjects $Root)) {
         $projectRoot=Join-Path $Root ('engine/'+$project)
         if (-not [IO.Directory]::Exists($projectRoot)) { throw "Required product project missing: $project" }
         $files += @(Get-LpCandidateFiles $projectRoot -SourceOnly | Where-Object { $_.Extension -in @('.cs','.csproj','.json') })
@@ -490,7 +495,7 @@ function Assert-LpHostDependencyProvenance {
         if ($p.Id -cnotin $runtime -or $seen.ContainsKey([string]$p.Id) -or $approvedPack.Count -ne 1 -or $p.Version -cne $approvedPack[0].Version -or $p.License -cne 'MIT' -or $p.Repository -cne 'https://github.com/dotnet/dotnet' -or $p.Commit -cne $approvedPack[0].Commit -or $p.Sha512 -ne $approvedPack[0].Sha512 -or $p.Bytes -ne $approvedPack[0].Bytes) { throw 'Fixed official runtime pack provenance required.' };$seen[[string]$p.Id]=$true
     }
     if ($seen.Count -ne 2) { throw 'Exactly two fixed runtime pack provenance records required.' }
-    $projects=@('Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host');$seen=@{}
+    $projects=@(Get-LpHostProjects $SourceRoot);$seen=@{}
     foreach ($lock in @($Provenance.LockedRestore)) {
         if ($lock.Project -cnotin $projects -or $seen.ContainsKey([string]$lock.Project) -or [string]$lock.Sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid locked restore project provenance.' };$seen[[string]$lock.Project]=$true
         $original=Get-LpJson (Join-Path $SourceRoot ('engine/'+$lock.Project+'/packages.lock.json'))
@@ -514,13 +519,13 @@ function Assert-LpHostDependencyProvenance {
             if (-not $matches.Count) { throw 'Approved package was omitted from the published lock provenance.' }
         }
     }
-    if ($seen.Count -ne 5) { throw 'All five product project locked restores are required.' }
+    if ($seen.Count -ne $projects.Count) { throw 'All product project locked restores are required.' }
 }
 
 function Get-LpComponentFacts {
     param([string]$BuildRoot,$Build,[string]$SourceRoot,[switch]$ReleaseLayout)
     $noModel=Test-LpNoModelVersion $Build.Version
-    if ($Build.Version -cnotin @('0.13.0','0.14.0','0.15.0','0.16.0','0.16.1')) { throw 'Explicit supported component version required.' }
+    if (-not $noModel -and $Build.Version -cne '0.13.0') { throw 'Explicit supported component version required.' }
     if ($noModel -and ($Build.ModelMode -cne 'Absent' -or $Build.AlgorithmMode -cne 'Heuristic')) { throw '0.14 requires explicit Absent/Heuristic product modes.' }
     if ($Build.ComponentSchema -cne 'SafeJunkCleaner.Components.v1' -or $Build.ComponentsComplete -isnot [bool] -or -not $Build.ComponentsComplete -or $Build.BuildStage -cne 'ComponentsBuilt' -or $Build.BuildTool.Name -cne 'ps2exe' -or $Build.BuildTool.Version -cne '1.0.18') { throw 'Explicit complete component build schema required.' }
     $version=[string]$Build.Version;$fileVersion=$version+'.0'
@@ -588,7 +593,7 @@ function Get-LpComponentFacts {
                 if ($m.SourceProvenance.Sources.Path -match '^engine/Explorer\.Model/') { throw 'No-model Host provenance includes a model project.' }
             }
             $hostRequired=@('engine/Directory.Build.props')
-            $hostProjects=@('Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host')
+            $hostProjects=@(Get-LpHostProjects $SourceRoot)
             if (-not $noModel) { $hostProjects += 'Explorer.Model' }
             foreach ($project in $hostProjects) {
                 $projectRoot=Join-Path $SourceRoot ('engine/'+$project)
@@ -602,6 +607,7 @@ function Get-LpComponentFacts {
             foreach ($r in @($m.Components)) { $local += [pscustomobject]@{Path=$r.Path;SHA256=$r.Sha256;Bytes=$r.Bytes} }
             foreach ($p in @('sjc-explorer.exe','sjc-explorer.dll','coreclr.dll','hostfxr.dll','System.Private.CoreLib.dll','licenses/SafeJunkCleaner-LICENSE')) { if ($local.Path -cnotcontains $p) { throw "Incomplete self-contained ExplorerHost: $p" } }
             if ($noModel) {
+                if($Build.Version -ceq '0.17.0'){foreach($p in @('sjc-quickclean.exe','sjc-quickclean.dll','sjc-quickclean.deps.json','sjc-quickclean.runtimeconfig.json')){if($p -cnotin $local.Path){throw "Independent QuickClean Host missing: $p"}}}
                 Assert-LpNoModelPayload $local
                 foreach ($p in @('hostpolicy.dll','sjc-explorer.runtimeconfig.json','sjc-explorer.deps.json','Microsoft.Data.Sqlite.dll','SQLitePCLRaw.core.dll','SQLitePCLRaw.provider.e_sqlite3.dll','e_sqlite3.dll')) { if ($local.Path -cnotcontains $p) { throw "Incomplete 0.14 runtime/SQLite: $p" } }
                 if ($m.RuntimeVersion -cne '10.0.15') { throw 'Fixed repaired self-contained runtime required.' }

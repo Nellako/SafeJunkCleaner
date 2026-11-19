@@ -1,4 +1,9 @@
 ﻿# WPF desktop presentation. File operations stay in the engine or a background runspace.
+if (-not (Get-Command Resolve-SjcQuickCleanHost -CommandType Function -ErrorAction SilentlyContinue)) {
+    if ($PSScriptRoot -and [IO.File]::Exists((Join-Path $PSScriptRoot 'QuickCleanGuiBridge.ps1'))) {
+        . (Join-Path $PSScriptRoot 'QuickCleanGuiBridge.ps1')
+    }
+}
 function Initialize-SjcDesktop {
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
@@ -18,15 +23,11 @@ function Get-SjcGuiValue {
     if($Object.PSObject.Properties[$Name]){return $Object.$Name};return $Default
 }
 function Get-SjcGuiLaunchSpec {
-    param([string]$Mode,[string]$PayloadPath,[string]$OutputPath)
-    $entry=Get-Variable -Scope Script -Name SjcEntryPath -ValueOnly -ErrorAction SilentlyContinue
-    $packaged=Get-Variable -Scope Script -Name SjcIsPackaged -ValueOnly -ErrorAction SilentlyContinue
-    if(-not $entry -or -not [IO.File]::Exists($entry)){throw '找不到程序入口，请从 Main.ps1 或交付 EXE 启动。'}
-    foreach($path in @($entry,$PayloadPath,$OutputPath)){if($path.Contains('"')){throw '启动路径含无效字符。'}}
-    $arguments='-WorkerMode '+$Mode+' -PayloadPath "'+$PayloadPath+'" -OutputPath "'+$OutputPath+'"'
-    if($packaged){return @{FileName=$entry;Arguments=('-end '+$arguments)}}
-    if([IO.Path]::GetFileName($entry) -in @('Gui.ps1','Core.ps1','Rules.ps1','Worker.ps1')){throw '不能从模块文件启动后台任务。'}
-    return @{FileName=(Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe');Arguments=('-NoProfile -ExecutionPolicy Bypass -STA -File "'+$entry+'" '+$arguments)}
+    param([string]$Mode,[string]$PayloadPath,[string]$OutputPath,$LaunchSpec=$null,[string]$AppRoot='',$HostPlan=$null)
+    if(-not (Get-Command Get-SjcQuickCleanJobLaunchSpec -CommandType Function -ErrorAction SilentlyContinue)){
+        throw '找不到 QuickClean Host 桥接模块，拒绝回退旧版 Worker。'
+    }
+    return (Get-SjcQuickCleanJobLaunchSpec -Mode $Mode -PayloadPath $PayloadPath -OutputPath $OutputPath -LaunchSpec $LaunchSpec -AppRoot $AppRoot -HostPlan $HostPlan)
 }
 # 操作图标统一使用 Windows 系统字体 Segoe MDL2 Assets（不随应用分发）。语义名到码位的唯一映射，只保留实际使用的图标。
 function Get-SjcGuiGlyphMap {
@@ -257,7 +258,8 @@ $xaml=@'
  </Grid>
 </Window>
 '@
-    return (Expand-SjcGuiGlyphs $xaml).Replace('__PRODUCT_VERSION__',(Get-SjcVersion))
+    $display=if(Get-Command Get-SjcDisplayVersion -CommandType Function -ErrorAction SilentlyContinue){Get-SjcDisplayVersion}else{Get-SjcVersion}
+    return (Expand-SjcGuiGlyphs $xaml).Replace('__PRODUCT_VERSION__',$display)
 }
 function Test-SjcGuiProfileSupport {
     # 探测真实引擎三档接口：Set-SjcCleaningProfile -Context -CleaningProfile [-Invalidate]、Get-SjcPresetRuleIds、Get-SjcCleaningProfiles。
@@ -297,17 +299,37 @@ function Get-SjcGuiEffectiveRuleIds {
     if($State.CustomEnabled){return @($State.Rules|Where-Object{$State.CustomSelected.Contains([string]$_.Id)}|ForEach-Object{[string]$_.Id})}
     return @(Get-SjcGuiPresetIds $State.Context $State.Profile)
 }
+function Resolve-SjcGuiInitialHistory {
+    param($Context,[bool]$TestMode)
+    if($TestMode){
+        $testCtx=if(Get-Command Get-SjcQuickCleanTestContext -CommandType Function -ErrorAction SilentlyContinue){Get-SjcQuickCleanTestContext}else{$null}
+        if($testCtx -and [bool](Get-SjcGuiValue $testCtx 'UseHostInTestMode' $false)){
+            return ,(Get-SjcQuickCleanHistory)
+        }
+        if(Get-Command Get-SjcQuickHistory -CommandType Function -ErrorAction SilentlyContinue){
+            return ,(Get-SjcQuickHistory $Context)
+        }
+        $list=New-Object 'System.Collections.Generic.List[object]'
+        return ,$list
+    }
+    if(-not (Get-Command Get-SjcQuickCleanHistory -CommandType Function -ErrorAction SilentlyContinue)){
+        throw '缺少 QuickClean Host 历史查询桥接，拒绝回退。'
+    }
+    return ,(Get-SjcQuickCleanHistory)
+}
 function New-SjcGuiState {
     param($Context,[switch]$TestMode)
     $configuration=Get-SjcContextConfiguration $Context
     if($TestMode -and -not $configuration.IsTest){throw '测试模式要求上下文的 IsTest 为 true；不允许非自建测试上下文或伪造 IsTest。'}
+    if(-not $TestMode -and $configuration.IsTest){throw '测试上下文必须启用 -TestMode，禁止走生产宿主。'}
     $profile=Get-SjcGuiContextProfile $Context
     $rules=@(Get-SjcRules $Context)
     $ruleMap=@{};foreach($rule in $rules){$ruleMap[[string]$rule.Id]=$rule}
     $selected=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach($id in @(Get-SjcGuiPresetIds $Context $profile)){[void]$selected.Add($id)}
     $custom=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    return @{Context=$Context;Rules=$rules;RuleMap=$ruleMap;Selected=$selected;Profile=$profile;CustomEnabled=$false;CustomSelected=$custom;CustomInitialized=$false;RuleRows=@();RecycleMode=$true;Scan=$null;ScanProfile='';ScanCustomEnabled=$false;ScanRuleIds=@();TaskDirectory='';Stale=$true;Excluded=@{};ExcludedRule=@{};CandidateSelection=@{};PageOffset=0;PageSize=200;PageItems=@();History=(New-Object 'System.Collections.Generic.List[object]');Task=$null;LocalJob=$null;Background=$null;FilesExpanded=$false;LogsExpanded=$false;TestMode=[bool]$TestMode;Busy=$false;Status='就绪。先扫描预览,不自动删除文件。';Notice='';LastResult=$null;Closing=$false;PendingScan=$false;PendingScope=$null;ProfileSupported=(Test-SjcGuiProfileSupport);Icon=$null;ScanFeedback=$null;ScanClock=$null}
+    $history=Resolve-SjcGuiInitialHistory -Context $Context -TestMode ([bool]$TestMode)
+    return @{Context=$Context;Rules=$rules;RuleMap=$ruleMap;Selected=$selected;Profile=$profile;CustomEnabled=$false;CustomSelected=$custom;CustomInitialized=$false;RuleRows=@();RecycleMode=$true;Scan=$null;ScanProfile='';ScanCustomEnabled=$false;ScanRuleIds=@();TaskDirectory='';Stale=$true;Excluded=@{};ExcludedRule=@{};CandidateSelection=@{};PageOffset=0;PageSize=200;PageItems=@();History=$history;Task=$null;LocalJob=$null;Background=$null;FilesExpanded=$false;LogsExpanded=$false;TestMode=[bool]$TestMode;UseQuickCleanHost=(-not [bool]$TestMode);Busy=$false;Status='就绪。先扫描预览,不自动删除文件。';Notice='';LastResult=$null;Closing=$false;PendingScan=$false;PendingScope=$null;ProfileSupported=(Test-SjcGuiProfileSupport);Icon=$null;ScanFeedback=$null;ScanClock=$null}
 }
 function Test-SjcGuiPreviewOpen {
     param($State)
@@ -479,7 +501,7 @@ function Set-SjcGuiPanel {
 function Test-SjcGuiFilesAvailable {
     # 扫描结束且计划有效（Success 或 Partial，未因范围变化失效）才可查看明细。
     param($State)
-    return [bool]($null -ne $State.Scan -and -not $State.Stale -and [string]$State.Scan.Status -in @('Success','Partial') -and [string](Get-SjcGuiValue $State.Scan 'PlanPath' ''))
+    return [bool]($null -ne $State.Scan -and -not $State.Stale -and [string](Get-SjcGuiValue $State.Scan 'Status' '') -in @('Success','Partial') -and ([string](Get-SjcGuiValue $State.Scan 'PlanPath' '') -or [string](Get-SjcGuiValue $State.Scan 'TaskId' '') -or [string]$State.TaskDirectory))
 }
 function Open-SjcGuiFilesWindow {
     # 单实例：已打开则置前；主窗未显示（隔离渲染）时只创建不显示。共享主窗资源字典，关闭时归还 FilesPanel 以便重开。
@@ -600,10 +622,29 @@ function Set-SjcGuiStatus {
 }
 function Test-SjcGuiCleanable {
     param($State)
-    return ($null -ne $State.Scan -and -not $State.Stale -and $State.Scan.Status -in @('Success','Partial') -and $State.Scan.CandidateCount -gt 0)
+    return ($null -ne $State.Scan -and -not $State.Stale -and [string](Get-SjcGuiValue $State.Scan 'Status' '') -in @('Success','Partial') -and [int64](Get-SjcGuiValue $State.Scan 'CandidateCount' 0) -gt 0)
 }
 function Get-SjcGuiCategoryStatusMap {
-    return @{Success='已扫描';Partial='部分完成（已发现量）';Missing='目录不存在，跳过';RunningProcess='应用运行中，跳过';Failed='读取失败';Cancelled='扫描已取消';Pending='尚未扫描';UnsupportedConfiguration='检测到自定义缓存配置，未扫描'}
+    return @{Success='已扫描';Partial='部分完成（已发现量）';Missing='目录不存在，跳过';RunningProcess='应用运行中，跳过';ProcessGuardUnknown='进程状态未知，保守跳过';Failed='读取失败';Cancelled='扫描已取消';Pending='尚未扫描';UnsupportedConfiguration='检测到自定义缓存配置，未扫描'}
+}
+function Resolve-SjcGuiCategoryDisplay {
+    param($State,$Category)
+    $ruleId=[string](Get-SjcGuiValue $Category 'RuleId' '')
+    $rule=if($ruleId -and $State.RuleMap.ContainsKey($ruleId)){$State.RuleMap[$ruleId]}else{$null}
+    $status=[string](Get-SjcGuiValue $Category 'Status' 'Pending')
+    $name=[string](Get-SjcGuiValue $Category 'Name' '')
+    if((-not $name -or $name -ceq $ruleId) -and $rule){$name=[string]$rule.Name}
+    elseif(-not $name){$name=$ruleId}
+    $group=[string](Get-SjcGuiValue $Category 'Group' '')
+    if((-not $group -or $group -ceq '快速清理') -and $rule -and [string]$rule.Group){$group=[string]$rule.Group}
+    elseif(-not $group){$group='未分组'}
+    $risk=[string](Get-SjcGuiValue $Category 'Risk' '')
+    if((-not $risk -or $risk -ceq '按规则复核') -and $rule -and [string]$rule.Risk){$risk=[string]$rule.Risk}
+    $root=[string](Get-SjcGuiValue $Category 'Root' '')
+    if(-not $root -and $rule){$root=[string]$rule.Root}
+    $note=[string](Get-SjcGuiValue $Category 'Note' '')
+    if((-not $note -or $note -ceq $status) -and $rule){$note=[string]$rule.Note}
+    return [pscustomobject]@{RuleId=$ruleId;Name=$name;Group=$group;Risk=$risk;Root=$root;Note=$note;Status=$status;Count=[int64](Get-SjcGuiValue $Category 'Count' 0);Bytes=[int64](Get-SjcGuiValue $Category 'Bytes' 0)}
 }
 function Get-SjcGuiCategoryRows {
     # 分类主表：有有效扫描时来自扫描封存分类；否则列出当前生效范围的规则（未扫描）。
@@ -613,14 +654,14 @@ function Get-SjcGuiCategoryRows {
     foreach($id in @($s.Excluded.Keys)){$rule=[string]$s.ExcludedRule[$id];$keptCount[$rule]=1+[int64]$keptCount[$rule];$keptBytes[$rule]=[int64]$keptBytes[$rule]+[int64]$s.Excluded[$id]}
     $statusMap=Get-SjcGuiCategoryStatusMap
     $fresh=($null -ne $s.Scan -and -not $s.Stale)
-    $source=if($fresh){@($s.Scan.Categories)}else{@($s.Rules|Where-Object{$s.Selected.Contains([string]$_.Id)}|ForEach-Object{[pscustomobject]@{RuleId=$_.Id;Name=$_.Name;Group=$_.Group;Root=$_.Root;Note=$_.Note;Count=0;Bytes=0;Status=$(if($s.Scan){'Stale'}else{'Pending'})}})}
+    $source=if($fresh){@(Get-SjcGuiValue $s.Scan 'Categories' @())}else{@($s.Rules|Where-Object{$s.Selected.Contains([string]$_.Id)}|ForEach-Object{[pscustomobject]@{RuleId=$_.Id;Name=$_.Name;Group=$_.Group;Root=$_.Root;Note=$_.Note;Count=0;Bytes=0;Status=$(if($s.Scan){'Stale'}else{'Pending'})}})}
     return @($source|ForEach-Object{
-        $ruleId=[string](Get-SjcGuiValue $_ 'RuleId' '');$status=[string](Get-SjcGuiValue $_ 'Status' 'Pending')
+        $cat=Resolve-SjcGuiCategoryDisplay $s $_
+        $ruleId=$cat.RuleId;$status=$cat.Status
         $text=if($status -eq 'Stale'){'需重新扫描'}else{$statusMap[$status]};if(-not $text){$text=$status}
         $counted=$fresh -and $status -in @('Success','Partial')
-        $count=[int64](Get-SjcGuiValue $_ 'Count' 0);$kept=[int64]$keptCount[$ruleId]
-        $group=[string](Get-SjcGuiValue $_ 'Group' '');if(-not $group){$group='未分组'}
-        [pscustomobject]@{RuleId=$ruleId;Group=$group;Name=[string](Get-SjcGuiValue $_ 'Name' $ruleId);StatusText=$text;Count=$count;CountText=$(if($counted){'{0:N0}' -f $count}else{'—'});SizeText=$(if($counted){Format-SjcGuiSize ([int64](Get-SjcGuiValue $_ 'Bytes' 0))}else{'—'});Kept=$kept;KeptText=$(if($kept){'{0:N0}' -f $kept}else{''});Detail=([string](Get-SjcGuiValue $_ 'Note' '')+"`r`n"+[string](Get-SjcGuiValue $_ 'Root' ''))}
+        $count=[int64]$cat.Count;$kept=[int64]$keptCount[$ruleId]
+        [pscustomobject]@{RuleId=$ruleId;Group=$cat.Group;Name=$cat.Name;StatusText=$text;Count=$count;CountText=$(if($counted){'{0:N0}' -f $count}else{'—'});SizeText=$(if($counted){Format-SjcGuiSize ([int64]$cat.Bytes)}else{'—'});Kept=$kept;KeptText=$(if($kept){'{0:N0}' -f $kept}else{''});Detail=($cat.Note+"`r`n"+$cat.Root)}
     })
 }
 function Get-SjcGuiSelectedCategoryRuleIds {
@@ -787,11 +828,11 @@ function Get-SjcGuiPartialReasonText {
     param($State)
     $scan=$State.Scan;$lines=New-Object 'System.Collections.Generic.List[string]'
     if($null -eq $scan){return '当前没有扫描结果。'}
-    [void]$lines.Add(('扫描状态：{0}。当前已发现候选 {1:N0} 个，共 {2}。这是已发现量，不是已释放空间。' -f [string]$scan.Status,[int64]$scan.CandidateCount,(Format-SjcGuiSize ([int64]$scan.CandidateBytes))))
+    [void]$lines.Add(('扫描状态：{0}。当前已发现候选 {1:N0} 个，共 {2}。这是已发现量，不是已释放空间。' -f [string](Get-SjcGuiValue $scan 'Status' ''),[int64](Get-SjcGuiValue $scan 'CandidateCount' 0),(Format-SjcGuiSize ([int64](Get-SjcGuiValue $scan 'CandidateBytes' 0)))))
     [void]$lines.Add('')
-    $map=Get-SjcGuiCategoryStatusMap;$abnormal=@(@($scan.Categories)|Where-Object{[string](Get-SjcGuiValue $_ 'Status' '') -ne 'Success'})
+    $map=Get-SjcGuiCategoryStatusMap;$abnormal=@(@(Get-SjcGuiValue $scan 'Categories' @())|Where-Object{[string](Get-SjcGuiValue $_ 'Status' '') -ne 'Success'})
     [void]$lines.Add(('未完整扫描的分类（{0}）：' -f $abnormal.Count))
-    foreach($category in $abnormal){$status=[string](Get-SjcGuiValue $category 'Status' '');$text=$map[$status];if(-not $text){$text=$status};$note=[string](Get-SjcGuiValue $category 'Note' '');[void]$lines.Add(('- [{0}] {1}：{2}{3}' -f [string](Get-SjcGuiValue $category 'Group' ''),[string](Get-SjcGuiValue $category 'Name' (Get-SjcGuiValue $category 'RuleId' '')),$text,$(if($note){'；'+$note}else{''})))}
+    foreach($category in $abnormal){$disp=Resolve-SjcGuiCategoryDisplay $State $category;$status=$disp.Status;$text=$map[$status];if(-not $text){$text=$status};$note=$disp.Note;[void]$lines.Add(('- [{0}] {1}：{2}{3}' -f $disp.Group,$disp.Name,$text,$(if($note){'；'+$note}else{''})))}
     $warnings=@(Get-SjcGuiValue $scan 'Warnings' @())
     [void]$lines.Add('');[void]$lines.Add(('警告（{0} 条{1}）：' -f [int](Get-SjcGuiValue $scan 'WarningCount' $warnings.Count),$(if($warnings.Count){'，显示已记录部分'}else{''})))
     if($warnings.Count){foreach($warning in $warnings){[void]$lines.Add('- '+[string]$warning)}}else{[void]$lines.Add('- 无')}
@@ -874,7 +915,7 @@ function New-SjcGuiMaintenanceWindow {
     $status=[Windows.Controls.TextBlock]::new();$status.Margin='0,16,0,10';$status.TextWrapping='Wrap';$status.Text='尚未启动。';$panel.Children.Add($status)|Out-Null
     $button=[Windows.Controls.Button]::new();$button.Content='确认并启动组件清理…';$button.HorizontalAlignment='Left';$panel.Children.Add($button)|Out-Null
     $w.Tag=@{Draft=$Draft;Status=$status;Button=$button};$button.Tag=$w.Tag
-    $button.Add_Click({param($sender,$event) $d=$sender.Tag.Draft;$app=$d.App;$s=$app.State;if($s.Busy -or $app.Maintenance){return};if($s.TestMode){$sender.Tag.Status.Text='测试模式禁止启动。';return};if([Windows.MessageBox]::Show($d.Window,'将以管理员权限运行组件清理，旧组件可能立即删除并影响回滚。确认继续？','确认系统维护','YesNo','Warning','No') -ne 'Yes'){return};$r=Start-SjcMaintenance -ActionId 'ComponentCleanup';if($r.Status -ne 'Running'){$sender.Tag.Status.Text=($r.Status+'：'+$r.Error);return};$app.Maintenance=@{Process=$r.Process;View=$sender.Tag};$s.Busy=$true;$sender.IsEnabled=$false;$sender.Tag.Status.Text='系统维护进行中；关闭此窗口不会停止维护。';Set-SjcGuiStatus $app '系统维护进行中，扫描和清理已暂停。';Update-SjcGuiView $app})
+    $button.Add_Click({param($sender,$event) $d=$sender.Tag.Draft;$app=$d.App;$s=$app.State;if($s.Busy -or $app.Maintenance){return};if($s.TestMode){$sender.Tag.Status.Text='测试模式禁止启动。';return};if([Windows.MessageBox]::Show($d.Window,'将以管理员权限运行组件清理，旧组件可能立即删除并影响回滚。确认继续？','确认系统维护','YesNo','Warning','No') -ne 'Yes'){return};if(-not (Get-Command Start-SjcQuickCleanMaintenance -CommandType Function -ErrorAction SilentlyContinue)){$sender.Tag.Status.Text='Failed：缺少 QuickClean Host 维护通道，拒绝回退。';return};$r=Start-SjcQuickCleanMaintenance;if($r.Status -ne 'Running'){$sender.Tag.Status.Text=($r.Status+'：'+$r.Error);return};$app.Maintenance=@{Process=$r.Process;View=$sender.Tag};$s.Busy=$true;$sender.IsEnabled=$false;$sender.Tag.Status.Text='系统维护进行中；关闭此窗口不会停止维护。';Set-SjcGuiStatus $app '系统维护进行中，扫描和清理已暂停。';Update-SjcGuiView $app})
     $w.Add_Closing({param($sender,$event) $app=$sender.Tag.Draft.App;if($app.Maintenance){if([Windows.MessageBox]::Show($sender,'维护将继续运行，主窗口会显示结果。确定关闭此窗口？','系统维护','YesNo','Information','No') -ne 'Yes'){$event.Cancel=$true}else{$app.Maintenance.View=$null}}})
     return $w
 }
@@ -1010,26 +1051,23 @@ function Get-SjcGuiCleanSummary {
     $keptCount=@{};$keptBytes=@{}
     foreach($id in @($s.Excluded.Keys)){$rule=[string]$s.ExcludedRule[$id];$keptCount[$rule]=1+[int64]$keptCount[$rule];$keptBytes[$rule]=[int64]$keptBytes[$rule]+[int64]$s.Excluded[$id]}
     $rows=New-Object 'System.Collections.Generic.List[object]'
-    foreach($category in @($s.Scan.Categories)){
-        $ruleId=[string](Get-SjcGuiValue $category 'RuleId' '')
-        $count=[int64](Get-SjcGuiValue $category 'Count' 0)
+    foreach($category in @(Get-SjcGuiValue $s.Scan 'Categories' @())){
+        $disp=Resolve-SjcGuiCategoryDisplay $s $category
+        $ruleId=$disp.RuleId
+        $count=[int64]$disp.Count
         if($count -le 0){continue}
-        $pendingCount=$count-[int64]$keptCount[$ruleId];$pendingBytes=[int64](Get-SjcGuiValue $category 'Bytes' 0)-[int64]$keptBytes[$ruleId]
+        $pendingCount=$count-[int64]$keptCount[$ruleId];$pendingBytes=[int64]$disp.Bytes-[int64]$keptBytes[$ruleId]
         if($pendingCount -le 0){continue}
-        $rule=if($s.RuleMap.ContainsKey($ruleId)){$s.RuleMap[$ruleId]}else{$null}
-        $note=[string](Get-SjcGuiValue $category 'Note' '');if(-not $note -and $rule){$note=[string]$rule.Note}
-        $risk=[string](Get-SjcGuiValue $category 'Risk' '');if(-not $risk -and $rule){$risk=[string]$rule.Risk}
-        $group=[string](Get-SjcGuiValue $category 'Group' '');if(-not $group -and $rule){$group=[string]$rule.Group}
-        $root=[string](Get-SjcGuiValue $category 'Root' '');if(-not $root -and $rule){$root=[string]$rule.Root}
-        [void]$rows.Add([pscustomobject]@{Group=$group;RuleId=$ruleId;Name=[string](Get-SjcGuiValue $category 'Name' $ruleId);Root=$root;Count=$pendingCount;CountText=('{0:N0}' -f $pendingCount);Bytes=$pendingBytes;SizeText=(Format-SjcGuiSize $pendingBytes);Kept=[int64]$keptCount[$ruleId];Impact=$(if($note){'风险 '+$risk+'；'+$note}else{'风险 '+$risk})})
+        $note=$disp.Note;$risk=$disp.Risk;$group=$disp.Group;$root=$disp.Root
+        [void]$rows.Add([pscustomobject]@{Group=$group;RuleId=$ruleId;Name=$disp.Name;Root=$root;Count=$pendingCount;CountText=('{0:N0}' -f $pendingCount);Bytes=$pendingBytes;SizeText=(Format-SjcGuiSize $pendingBytes);Kept=[int64]$keptCount[$ruleId];Impact=$(if($note){'风险 '+$risk+'；'+$note}else{'风险 '+$risk})})
     }
     $profile=[string](Get-SjcGuiValue $s.Scan 'CleaningProfile' $s.ScanProfile)
     if(-not $profile){$profile=$s.ScanProfile}
     $profile=Assert-SjcGuiProfileValue $profile
     $custom=Get-SjcGuiValue $s.Scan 'CustomEnabled' $s.ScanCustomEnabled
     $info=Get-SjcGuiProfileInfo $profile
-    $pending=[int64]$s.Scan.CandidateCount-$s.Excluded.Count
-    $bytes=[int64]$s.Scan.CandidateBytes-(Get-SjcGuiExcludedBytes $s)
+    $pending=[int64](Get-SjcGuiValue $s.Scan 'CandidateCount' 0)-$s.Excluded.Count
+    $bytes=[int64](Get-SjcGuiValue $s.Scan 'CandidateBytes' 0)-(Get-SjcGuiExcludedBytes $s)
     return [pscustomobject]@{PendingCount=$pending;PendingBytes=$bytes;KeptCount=$s.Excluded.Count;CheckedCount=$s.CandidateSelection.Count;RecycleMode=[bool]$s.RecycleMode;Profile=$profile;ProfileLabel=[string]$info.Label;CustomEnabled=[bool]$custom;Impact=[string]$info.Impact;HighImpact=($profile -ceq 'High');ProfileSupported=[bool]$s.ProfileSupported;Rows=$rows.ToArray()}
 }
 function New-SjcGuiCleanConfirmWindow {
@@ -1088,8 +1126,17 @@ function New-SjcGuiCleanConfirmWindow {
 function Initialize-SjcGuiBackground {
     param($App)
     if($App.State.Background){return}
+    if(Get-Command Initialize-SjcQuickCleanBridge -CommandType Function -ErrorAction SilentlyContinue){
+        try{Initialize-SjcQuickCleanBridge}catch{}
+    }
     $initial=[Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     $initial.Variables.Add([Management.Automation.Runspaces.SessionStateVariableEntry]::new('SjcEmbeddedVersion',(Get-SjcVersionInfo),''))
+    foreach($varName in @('SjcEntryPath','SjcIsPackaged','SjcEmbeddedExplorerManifestSha256','SjcExplorerBridgeSource','SjcExplorerTestContext','SjcQuickCleanTestContext','SjcQuickCleanDefaultAppRoot','SjcQuickCleanDefaultSrcRoot')){
+        if(Get-Variable -Scope Script -Name $varName -ErrorAction SilentlyContinue){
+            $val=Get-Variable -Scope Script -Name $varName -ValueOnly -ErrorAction SilentlyContinue
+            $initial.Variables.Add([Management.Automation.Runspaces.SessionStateVariableEntry]::new($varName,$val,''))
+        }
+    }
     foreach($command in Get-Command -CommandType Function | Where-Object Name -Match '-Sjc'){
         $initial.Commands.Add([Management.Automation.Runspaces.SessionStateFunctionEntry]::new($command.Name,$command.Definition))
     }
@@ -1103,24 +1150,49 @@ function Start-SjcGuiLocalJob {
     param($App,[ValidateSet('Open','Page','RuleKeep','Export','Close')][string]$Kind,$Arguments)
     if($App.State.LocalJob){throw '已有候选操作正在执行。'}
     Initialize-SjcGuiBackground $App
-    $background=$App.State.Background
+    $s=$App.State
+    $background=$s.Background
+    $jobArgs=@{}
+    if($Arguments -is [Collections.IDictionary]){foreach($k in $Arguments.Keys){$jobArgs[[string]$k]=$Arguments[$k]}}
+    $testCtx=if(Get-Command Get-SjcQuickCleanTestContext -CommandType Function -ErrorAction SilentlyContinue){Get-SjcQuickCleanTestContext}else{$null}
+    $useHost=(-not [bool]$s.TestMode) -or [bool](Get-SjcGuiValue $s 'UseQuickCleanHost' $false) -or [bool](Get-SjcGuiValue $jobArgs 'UseHost' $false) -or ($null -ne $testCtx -and [bool](Get-SjcGuiValue $testCtx 'UseHostInTestMode' $false))
+    $jobArgs['UseHost']=$useHost
+    if(-not $jobArgs.ContainsKey('Limit') -and $s.PageSize -gt 0){$jobArgs['Limit']=[int]$s.PageSize}
+    if(-not $jobArgs.ContainsKey('TaskId') -or [string]::IsNullOrWhiteSpace([string]$jobArgs['TaskId'])){
+        $scanTid=if($s.Scan){[string](Get-SjcGuiValue $s.Scan 'TaskId' '')}else{''}
+        if($scanTid){$jobArgs['TaskId']=$scanTid}
+        elseif($s.TaskDirectory){$jobArgs['TaskId']=[IO.Path]::GetFileName(([string]$s.TaskDirectory).TrimEnd('\'))}
+    }
+    if(-not $jobArgs.ContainsKey('TaskDirectory') -and $s.TaskDirectory){$jobArgs['TaskDirectory']=[string]$s.TaskDirectory}
+    if($useHost){
+        if(-not $jobArgs.ContainsKey('AppRoot') -and (Get-Command Resolve-SjcQuickCleanAppRoot -CommandType Function -ErrorAction SilentlyContinue)){
+            try{$jobArgs['AppRoot']=(Resolve-SjcQuickCleanAppRoot '')}catch{}
+        }
+        $jobArgs['EmbeddedManifestSha256']=(Get-Variable -Name SjcEmbeddedExplorerManifestSha256 -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+        $jobArgs['QuickCleanTestContext']=(Get-Variable -Name SjcQuickCleanTestContext -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+        $jobArgs['ExplorerTestContext']=(Get-Variable -Name SjcExplorerTestContext -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+    }
     $source=@'
 param($Shared,$Kind,$Arguments,$Token)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if([bool]$Arguments['UseHost']){
+ if(-not (Get-Command Invoke-SjcQuickCleanLocalJob -CommandType Function -ErrorAction SilentlyContinue)){throw '缺少 QuickClean Host 查询桥接，拒绝回退。'}
+ return (Invoke-SjcQuickCleanLocalJob -Shared $Shared -Kind $Kind -Arguments $Arguments -CancellationToken $Token)
+}
 switch($Kind){
  'Open' { if($Shared.Preview){Close-SjcPreviewSession $Shared.Preview};$Shared.Preview=Open-SjcPreviewSession -PlanPath $Arguments.PlanPath -CancellationToken $Token;[pscustomobject]@{Items=@(Get-SjcPreviewPage $Shared.Preview -Offset 0 -Limit 200);Count=$Shared.Preview.Count} }
  'Page' { $Token.ThrowIfCancellationRequested();[pscustomobject]@{Items=@(Get-SjcPreviewPage $Shared.Preview -Offset $Arguments.Offset -Limit 200)} }
  'RuleKeep' { $list=New-Object 'System.Collections.Generic.List[object]';$ids=if($Arguments.ContainsKey('RuleIds')){@($Arguments.RuleIds)}else{@($Arguments.RuleId)};foreach($rid in $ids){$Token.ThrowIfCancellationRequested();foreach($item in @(Get-SjcPreviewRuleCandidates $Shared.Preview $rid)){[void]$list.Add([pscustomobject]@{Id=$item.Id;Length=[int64]$item.Length;RuleId=[string]$rid})}};[pscustomobject]@{Items=$list.ToArray()} }
  'Export' { $Token.ThrowIfCancellationRequested();Export-SjcCandidates -PlanPath $Arguments.PlanPath -Destination $Arguments.Destination -ExcludedIds $Arguments.ExcludedIds -CancellationToken $Token }
- 'Close' { if($Shared.Preview){Close-SjcPreviewSession $Shared.Preview;$Shared.Preview=$null};[pscustomobject]@{Closed=$true} }
+ 'Close' { if($Shared.Preview){if($Shared.Preview.PSObject.Properties['Stream']){Close-SjcPreviewSession $Shared.Preview}elseif(Get-Command Close-SjcQuickCleanPreviewState -CommandType Function -ErrorAction SilentlyContinue){Close-SjcQuickCleanPreviewState $Shared};$Shared.Preview=$null};[pscustomobject]@{Closed=$true} }
 }
 '@
     $power=[PowerShell]::Create();$power.Runspace=$background.Runspace
     $cancel=[Threading.CancellationTokenSource]::new()
-    [void]$power.AddScript($source).AddArgument($background.Shared).AddArgument($Kind).AddArgument($Arguments).AddArgument($cancel.Token)
+    [void]$power.AddScript($source).AddArgument($background.Shared).AddArgument($Kind).AddArgument($jobArgs).AddArgument($cancel.Token)
     $handle=$power.BeginInvoke()
-    $App.State.LocalJob=@{Kind=$Kind;Arguments=$Arguments;PowerShell=$power;Handle=$handle;Cancel=$cancel}
+    $App.State.LocalJob=@{Kind=$Kind;Arguments=$jobArgs;PowerShell=$power;Handle=$handle;Cancel=$cancel}
     $label=@{Open='打开候选预览';Page='读取分页';RuleKeep='按分类更新保留';Export='完整导出 CSV';Close='释放旧预览'}[$Kind]
     $App.State.Busy=$true;Set-SjcGuiStatus $App ('正在后台'+$label+'；完成前范围与清理操作暂停。');Update-SjcGuiView $App
 }
@@ -1168,13 +1240,19 @@ function Start-SjcGuiTask {
     if($s.TestMode){throw '隔离界面模式不允许启动生产 Worker。'}
     if($s.PendingScope){throw '范围调整尚未完成。'}
     if($Action -in @('Scan','Clean') -and (Get-SjcGuiContextProfile $s.Context) -cne $s.Profile){throw '界面强度与引擎上下文不一致，请重新选择强度。'}
+    if(-not (Get-Command Resolve-SjcQuickCleanHost -CommandType Function -ErrorAction SilentlyContinue)){throw '找不到 QuickClean Host 桥接模块，拒绝回退旧版 Worker。'}
+    $hostPlan=Resolve-SjcQuickCleanHost
     if($Action -eq 'Clean'){if(-not (Test-SjcGuiCleanable $s)){throw '没有可清理的有效扫描。'};$task=$s.TaskDirectory}else{$task=New-SjcTaskDirectory $s.Context}
     $id=[guid]::NewGuid().ToString('N').Substring(0,8);$prefix='gui-'+$Action.ToLower()+'-'+$id
     $payloadPath=Join-Path $task ($prefix+'.payload.json');$outputPath=Join-Path $task ($prefix+'.output.json');$progress=Join-Path $task ($prefix+'.progress.json');$cancel=Join-Path $task ($prefix+'.cancel')
     $payload=New-SjcGuiTaskPayload $s $Action $task $progress $cancel
     Write-SjcAtomicText $payloadPath ($payload|ConvertTo-Json -Depth 5 -Compress) -NoOverwrite
-    $spec=Get-SjcGuiLaunchSpec $Action $payloadPath $outputPath
-    $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$spec.FileName;$info.Arguments=$spec.Arguments;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+    $spec=Get-SjcGuiLaunchSpec -Mode $Action -PayloadPath $payloadPath -OutputPath $outputPath -HostPlan $hostPlan
+    $info=if(Get-Command New-SjcQuickCleanProcessStartInfo -CommandType Function -ErrorAction SilentlyContinue){
+        New-SjcQuickCleanProcessStartInfo -FileName $spec.FileName -Arguments $spec.Arguments -WorkingDirectory ([string](Get-SjcGuiValue $spec 'WorkingDirectory' ''))
+    }else{
+        $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$spec.FileName;$psi.Arguments=$spec.Arguments;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi
+    }
     $process=[Diagnostics.Process]::new();$process.StartInfo=$info
     try{if(-not $process.Start()){throw '无法启动后台进程。'}}catch{$process.Dispose();throw}
     $s.Task=@{Action=$Action;TaskDirectory=$task;Process=$process;OutputPath=$outputPath;ProgressPath=$progress;CancelPath=$cancel;CancelRequested=$false;CancelAt=$null;Forced=$false;RuleIds=[string[]]@(Get-SjcGuiValue $payload 'RuleIds' @());Profile=[string](Get-SjcGuiValue $payload 'CleaningProfile' '');CustomEnabled=[bool](Get-SjcGuiValue $payload 'CustomEnabled' $false)}
@@ -1200,15 +1278,39 @@ function Complete-SjcGuiTask {
     $actionText=@{Scan='扫描';Clean='清理';Recycle='回收站'}[$action]
     $record=[pscustomobject]@{Time=(Get-Date -Format 'MM-dd HH:mm:ss');Action=$actionText;Status=$label;Summary=$summary;LogPath=[string](Get-SjcGuiValue $Result 'LogPath' '');TaskDirectory=$task.TaskDirectory;Result=$Result}
     $s.History.Insert(0,$record)
+    $useHost=(-not [bool]$s.TestMode) -or [bool](Get-SjcGuiValue $s 'UseQuickCleanHost' $false)
+    if($useHost -and (Get-Command Get-SjcQuickCleanHistory -CommandType Function -ErrorAction SilentlyContinue)){
+        try{
+            $freshHistory=Get-SjcQuickCleanHistory
+            if($freshHistory -and $freshHistory.Count -gt 0){
+                $matched=$false
+                foreach($item in $freshHistory){
+                    if([string]$item.TaskDirectory -ceq [string]$task.TaskDirectory -and -not $matched){
+                        if($null -eq $item.Result){$item.Result=$Result}
+                        $matched=$true
+                    }
+                }
+                if(-not $matched){$freshHistory.Insert(0,$record)}
+                $s.History=$freshHistory
+            }
+        }catch{}
+    }
     $errorText=[string](Get-SjcGuiValue $Result 'Error' '')
     if($action -eq 'Scan'){
+        if($Result -and $Result.PSObject.Properties['Categories']){
+            $Result.Categories=@(@($Result.Categories)|ForEach-Object{Resolve-SjcGuiCategoryDisplay $s $_})
+        }
         $s.Scan=$Result;$s.TaskDirectory=$task.TaskDirectory;$s.PageOffset=0;$s.PageItems=@()
         $sealedProfile=[string](Get-SjcGuiValue $Result 'CleaningProfile' $task.Profile)
         $sealedCustom=Get-SjcGuiValue $Result 'CustomEnabled' $task.CustomEnabled
         $s.ScanProfile=$sealedProfile;$s.ScanCustomEnabled=[bool]$sealedCustom;$s.ScanRuleIds=@($task.RuleIds)
         $s.Stale=($status -notin @('Success','Partial'))
         if(-not $s.Stale -and ($sealedProfile -cne $s.Profile -or $sealedCustom -isnot [bool] -or $sealedCustom -ne $s.CustomEnabled)){$s.Stale=$true;$errorText+=$(if($errorText){'；'}else{''})+'扫描封存范围与当前范围不一致，需重新扫描'}
-        if(-not $s.Stale -and $Result.CandidateCount -gt 0){Start-SjcGuiLocalJob $App 'Open' @{PlanPath=$Result.PlanPath}}
+        if(-not $s.Stale -and [int64](Get-SjcGuiValue $Result 'CandidateCount' 0) -gt 0){
+            $scanTid=[string](Get-SjcGuiValue $Result 'TaskId' '')
+            if(-not $scanTid -and $task.TaskDirectory){$scanTid=[IO.Path]::GetFileName(([string]$task.TaskDirectory).TrimEnd('\'))}
+            Start-SjcGuiLocalJob $App 'Open' @{PlanPath=[string](Get-SjcGuiValue $Result 'PlanPath' '');TaskId=$scanTid;TaskDirectory=$task.TaskDirectory}
+        }
     }elseif($action -eq 'Clean'){$s.Stale=$true;$s.PageItems=@()}
     Clear-SjcGuiScanFeedback $s
     Set-SjcGuiStatus $App ($label+'：'+$summary+$(if($errorText){'；'+$errorText}else{''})+$(if($action -eq 'Clean'){'。需重新扫描；回收站移动不等于空间释放。'}else{''}))
@@ -1228,7 +1330,12 @@ function Invoke-SjcGuiTick {
             if($values.Count -eq 0){throw '后台候选操作没有返回结果。'}
             $result=$values[-1]
             switch($job.Kind){
-                'Open' {$s.PageOffset=0;$s.PageItems=@($result.Items)}
+                'Open' {
+                    $s.PageOffset=0;$s.PageItems=@($result.Items)
+                    if($s.Scan -and $null -ne (Get-SjcGuiValue $result 'Count' $null) -and $s.Scan.PSObject.Properties['CandidateCount']){
+                        $s.Scan.CandidateCount=[int64]$result.Count
+                    }
+                }
                 'Page' {Sync-SjcGuiPageSelection $App;$s.PageOffset=$job.Arguments.Offset;$s.PageItems=@($result.Items);$App.Ui.CandidatesList.SelectedItem=$null}
                 'RuleKeep' {foreach($item in @($result.Items)){if($job.Arguments.Keep){$s.Excluded[$item.Id]=[int64]$item.Length;$s.ExcludedRule[$item.Id]=[string]$item.RuleId}else{$s.Excluded.Remove($item.Id);$s.ExcludedRule.Remove($item.Id)}}}
                 'Export' {Set-SjcGuiStatus $App ('完整导出 '+$result.ExportedCount+' 条候选至 '+$result.Destination)}
@@ -1264,12 +1371,19 @@ function Invoke-SjcGuiTick {
         }catch{if($task.Action -eq 'Scan' -and $s.ScanFeedback){$s.ScanFeedback.Reviewed=$null;$s.ScanFeedback.CandidateCount=$null;Update-SjcGuiScanFeedback $App}}
     }elseif($task.Action -eq 'Scan'){Update-SjcGuiScanFeedback $App}
     else{Clear-SjcGuiScanFeedback $s}
-    if($task.CancelRequested -and -not $task.Process.HasExited -and ([datetime]::UtcNow-$task.CancelAt).TotalSeconds -gt 20){$task.Process.Kill();$task.Forced=$true}
+    if($task.CancelRequested -and -not $task.Process.HasExited -and ([datetime]::UtcNow-$task.CancelAt).TotalSeconds -gt 20){
+        try{$task.Process.Kill();try{[void]$task.Process.WaitForExit(2000)}catch{}}catch{}
+        $task.Forced=$true
+    }
     if(-not $task.Process.HasExited){return}
     $result=$null
     try{
+        $exitCode=try{$task.Process.ExitCode}catch{$null}
         if(-not $task.Forced -and [IO.File]::Exists($task.OutputPath)){$result=Read-SjcSafeText $task.OutputPath|ConvertFrom-Json}
-        if($null -eq $result){$result=[pscustomobject]@{Status=$(if($task.Action -eq 'Scan'){'Failed'}else{'Unknown'});Error='后台终止或没有完整结果，可能已经部分处理，数量未知。';LogPath=''}}
+        if($null -ne $result -and $null -ne $exitCode -and $exitCode -ne 0 -and [string](Get-SjcGuiValue $result 'Status' '') -ceq 'Success'){
+            $result=[pscustomobject]@{Status=$(if($task.Action -eq 'Scan'){'Failed'}else{'Unknown'});Error=('进程异常退出（退出代码 '+$exitCode+'），结果状态不一致。');LogPath=[string](Get-SjcGuiValue $result 'LogPath' '')}
+        }
+        if($null -eq $result){$result=[pscustomobject]@{Status=$(if($task.Action -eq 'Scan'){'Failed'}else{'Unknown'});Error=('后台终止或没有完整结果'+$(if($null -ne $exitCode){'（退出代码 '+$exitCode+'）'}else{''})+'，可能已经部分处理，数量未知。');LogPath=''}}
     }catch{$result=[pscustomobject]@{Status='Unknown';Error=$_.Exception.Message;LogPath=''}}
     finally{$task.Process.Dispose()}
     Complete-SjcGuiTask $App $result
@@ -1285,7 +1399,13 @@ function Invoke-SjcGuiCommand {
         'DismissNoticeButton' {Set-SjcGuiNotice $App ''}
         'CancelButton' {Request-SjcGuiCancel $App}
         'OpenLogButton' {$selected=$u.HistoryList.SelectedItem;if($selected -and $selected.LogPath -and [IO.File]::Exists($selected.LogPath)){[void][Diagnostics.Process]::Start('notepad.exe',('"'+$selected.LogPath+'"'))}}
-        'DetailsButton' {$selected=$u.HistoryList.SelectedItem;if($selected){Show-SjcGuiDetails $App ($selected.Result|ConvertTo-Json -Depth 10)}}
+        'DetailsButton' {
+            $selected=$u.HistoryList.SelectedItem
+            if($selected){
+                $detail=if($null -ne (Get-SjcGuiValue $selected 'Result' $null)){$selected.Result}elseif($selected.LogPath -and [IO.File]::Exists($selected.LogPath)){try{Read-SjcSafeText $selected.LogPath|ConvertFrom-Json}catch{$selected}}else{$selected}
+                Show-SjcGuiDetails $App ($detail|ConvertTo-Json -Depth 10)
+            }
+        }
         default {
             if($s.Busy -or $s.PendingScope){throw '请等待当前任务结束。'}
             switch($Command){
@@ -1318,7 +1438,7 @@ function Invoke-SjcGuiCommand {
                 'CopyPathButton' {Sync-SjcGuiPageSelection $App;$paths=@($s.CandidateSelection.Values|ForEach-Object Path);if($paths.Count){[Windows.Clipboard]::SetText(($paths -join "`r`n"));Set-SjcGuiStatus $App ('已复制 '+$paths.Count+' 条勾选路径（可跨页）。')}}
                 'PreviousButton' {Start-SjcGuiLocalJob $App 'Page' @{Offset=[math]::Max(0,$s.PageOffset-$s.PageSize)}}
                 'NextButton' {Start-SjcGuiLocalJob $App 'Page' @{Offset=($s.PageOffset+$s.PageSize)}}
-                'ExportButton' {$dialog=[Microsoft.Win32.SaveFileDialog]::new();$dialog.Filter='CSV files (*.csv)|*.csv';$dialog.FileName='清理候选_'+(Get-Date -Format yyyyMMdd_HHmmss)+'.csv';$owner=if($App.FilesWindow -and $App.FilesWindow.IsLoaded){$App.FilesWindow}else{$u.Window};if($dialog.ShowDialog($owner)){Start-SjcGuiLocalJob $App 'Export' @{PlanPath=$s.Scan.PlanPath;Destination=$dialog.FileName;ExcludedIds=[string[]]@($s.Excluded.Keys)}}}
+                'ExportButton' {$dialog=[Microsoft.Win32.SaveFileDialog]::new();$dialog.Filter='CSV files (*.csv)|*.csv';$dialog.FileName='清理候选_'+(Get-Date -Format yyyyMMdd_HHmmss)+'.csv';$owner=if($App.FilesWindow -and $App.FilesWindow.IsLoaded){$App.FilesWindow}else{$u.Window};if($dialog.ShowDialog($owner)){Start-SjcGuiLocalJob $App 'Export' @{PlanPath=[string](Get-SjcGuiValue $s.Scan 'PlanPath' '');TaskId=[string](Get-SjcGuiValue $s.Scan 'TaskId' '');Destination=$dialog.FileName;ExcludedIds=[string[]]@($s.Excluded.Keys)}}}
                 'RemovePreviewButton' {$selected=$u.HistoryList.SelectedItem;if($selected -and $selected.TaskDirectory -and $selected.TaskDirectory -ne $s.TaskDirectory -and (Confirm-SjcGui $App '仅移除选中已放弃任务的预览/通道记录，不删除目标文件和日志。继续？')){[void](Remove-SjcTaskDirectory $s.Context $selected.TaskDirectory);Set-SjcGuiStatus $App '已移除任务预览记录，日志仍保留。'}}
             }
         }
@@ -1340,7 +1460,7 @@ function Remove-SjcGuiApp {
             $background=$App.State.Background;$power=$null
             try{
                 $power=[PowerShell]::Create();$power.Runspace=$background.Runspace
-                [void]$power.AddScript('param($shared) if($shared.Preview){Close-SjcPreviewSession $shared.Preview;$shared.Preview=$null}').AddArgument($background.Shared);[void]$power.Invoke()
+                [void]$power.AddScript('param($shared) if($shared.Preview){if($shared.Preview.PSObject.Properties["Stream"]){Close-SjcPreviewSession $shared.Preview}elseif(Get-Command Close-SjcQuickCleanPreviewState -CommandType Function -ErrorAction SilentlyContinue){Close-SjcQuickCleanPreviewState $shared};$shared.Preview=$null}').AddArgument($background.Shared);[void]$power.Invoke()
             }finally{if($power){try{$power.Dispose()}catch{}};try{$background.Runspace.Dispose()}catch{}}
         }
     }finally{$App.State.Busy=$false}

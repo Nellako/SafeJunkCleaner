@@ -30,7 +30,8 @@ try {
     Check (Test-LpNoModelVersion '0.16.1') '0.16.1 retains no-model capabilities'
     Check (@(Get-LpProductSources '0.16.1').Count -eq 10) '0.16.1 retains complete module payload'
     Check (@(Get-LpProductSources '0.16.0').Count -eq 10) '0.16 retains complete GUI modules'
-    Check (-not (Test-LpNoModelVersion '0.17.0')) 'unknown future version not implicitly supported'
+    Check ((Test-LpNoModelVersion '0.17.0') -and (@(Get-LpProductSources '0.17.0') -ccontains 'src/QuickCleanGuiBridge.ps1')) '0.17 explicitly requires the native-host bridge'
+    Check (-not (Test-LpNoModelVersion '0.18.0')) 'unknown future version not implicitly supported'
     Check ((@(Get-LpVerificationIds '0.15.0') -join ',') -ceq 'ReleaseRegression,ExplorerHost,HeuristicExploration') '0.15 retains mandatory heuristic verification'
     Check (@(Get-LpDesktopChecks '0.15.0') -ccontains 'HeuristicAnalysisObserved') '0.15 retains actual desktop gate'
     Check ((@(Get-LpVerificationIds '0.13.0') -join ',') -ceq 'ReleaseRegression,ExplorerHost,Model') 'historical model verification preserved'
@@ -110,6 +111,7 @@ try {
     $null=[IO.Directory]::CreateDirectory($component);$null=[IO.Directory]::CreateDirectory($componentSource)
     $productNames=@(Get-LpProductSources '0.14.0')+@('scripts/build.ps1','scripts/local-promotion-common.ps1','assets/app.ico','engine/Directory.Build.props')
     foreach ($name in $productNames) { Put (Join-Path $componentSource $name) '# SYNTHETIC UNIT INPUT ONLY' }
+    Put (Join-Path $componentSource 'version.json') '{"version":"0.14.0","fileVersion":"0.14.0.0","planSchemaVersion":1}'
     foreach ($projectName in @('Explorer.Core','Explorer.Analysis','Explorer.Execution','Explorer.Application','Explorer.Host')) { $null=[IO.Directory]::CreateDirectory((Join-Path $componentSource ('engine/'+$projectName))) }
     $exePath=Join-Path $component '星梦雨垃圾清理器_v0.14.0.exe'
     Add-Type -TypeDefinition 'using System.Reflection; [assembly: AssemblyFileVersion("0.14.0.0")] public static class SyntheticReleaseFixture { public static void Main() {} }' -OutputAssembly $exePath -OutputType ConsoleApplication

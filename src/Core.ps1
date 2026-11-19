@@ -34,7 +34,7 @@ function Test-SjcNoReparsePath {
 }
 function Initialize-SjcNative {
     if ('SjcV3.Native' -as [type]) { return }
-    Add-Type -TypeDefinition @'
+    $nativeSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -60,7 +60,8 @@ namespace SjcV3 {
   [DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern uint SHEmptyRecycleBin(IntPtr hwnd, string root, uint flags);
  }
 }
-'@ -ErrorAction Stop
+'@
+    Add-Type -TypeDefinition $nativeSource -ErrorAction Stop
 }
 function Get-SjcFileIdentity {
     param([string]$Path)

@@ -1,4 +1,12 @@
-# 构建与验证（v0.16.1）
+# 构建与验证（v0.17.0 beta）
+
+## v0.17 快速清理入口
+
+生产主窗口通过包内可信清单定位独立的 `explorer/sjc-quickclean.exe`。它与 `sjc-explorer.exe` 共享同一套本地 .NET 10 Windows x64 运行时，但各自拥有独立的入口、任务格式和授权判断。快速清理任务的扫描、文件身份复核、回收和永久处理不依赖 PowerShell 子进程。界面和既有隔离测试仍使用 PowerShell。
+
+`tools/explorer/Publish-Explorer.ps1` 对两个 Host 锁定还原、分别发布，合并前逐个校验同名运行时文件；随后用原有 `scripts/build.ps1 -ExplorerDirectory ...` 构建窗口。发布源码和交付包必须来自同一工作快照。QuickClean 专项验证方法见源码内 `tests/quickclean-beta/README.md`：将测试驱动绑定交付包中的 DLL，核对中断、重放、替换、回收和永久处理结果。通用 Release 套件中的历史 PowerShell 自检不能代替这项验证。
+
+以下章节描述沿用的深度探索、Windows 包和旧版测试约定；凡涉及快速清理执行，以本节和本版交付记录为准。
 
 本文面向维护与验证人员，说明当前源码树的构建方式、依赖边界、回归测试与本地发布门禁。本文是技术说明，不扩大 [LICENSE](../LICENSE) 的源码授权范围。
 
@@ -111,7 +119,7 @@ powershell.exe -NoProfile -File .\scripts\package-local.ps1 `
 
 以下材料保留在源码仓库中供维护者回溯历史背景与设计演进，**不作为当前 v0.16.1 产品的测试通过依据，也不全部随普通 Windows 用户包分发**（路径均相对于源码仓库根目录）：
 
-- **随包公开文档**：`README.md`、`LICENSE`、`THIRD-PARTY-NOTICES.md`、`assets/third-party/PS2EXE-LICENSE.txt`、`docs/使用手册.md`、[安全说明](SAFETY.md)、[规则说明](RULES.md)、[v0.16.1 说明](RELEASE-0.16.1.zh-CN.md)、`docs/DEVELOPMENT.md`
+- **随包公开文档**：`README.md`、`LICENSE`、`THIRD-PARTY-NOTICES.md`、`assets/third-party/PS2EXE-LICENSE.txt`、`docs/使用手册.md`、[安全说明](SAFETY.md)、[规则说明](RULES.md)、[v0.17.0 beta 说明](RELEASE-0.17.0.zh-CN.md)、`docs/DEVELOPMENT.md`
 - **仅源码仓库文档（版本与修复）**：`CHANGELOG.md`、`docs/REPAIR-0.16.1.md`、`docs/VALIDATION-0.16.1.md`、`docs/LOCAL-PROMOTION.md`
 - **仅源码仓库文档（契约与规则考据）**：`docs/EXPLORATION-CONTRACT.md`、`docs/RULE-MIGRATION.md`、`docs/CACHE-EVIDENCE.md`
 - **仅源码仓库历史发布与验证归档（仅作背景）**：`docs/RELEASE-0.16.0.zh-CN.md`、`docs/VALIDATION-0.16.0.md`、`docs/RELEASE-0.15.0.zh-CN.md`、`docs/VALIDATION-0.15.0.md`、`docs/RELEASE-0.14.0.zh-CN.md`、`docs/VALIDATION-0.14.0.md`、`docs/RELEASE-0.13.0.zh-CN.md`、`docs/VALIDATION-0.13.0.md`、`docs/RELEASE-0.12.0.zh-CN.md`、`docs/VALIDATION-0.12.0.md`、`docs/VALIDATION-0.11.0.md`、`docs/RECOVERY-0.10.0.md`、`docs/VALIDATION-0.10.0.md`

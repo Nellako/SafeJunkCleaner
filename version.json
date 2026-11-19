@@ -1,5 +1,6 @@
 {
-  "version": "0.16.1",
-  "fileVersion": "0.16.1.0",
+  "version": "0.17.0",
+  "fileVersion": "0.17.0.0",
+  "channel": "beta.1",
   "planSchemaVersion": 1
 }

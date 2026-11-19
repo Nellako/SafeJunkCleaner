@@ -169,6 +169,10 @@ function Get-SourceHashes {
         if ($null -ne $record) { $records.Add($record) }
     }
     $records.Add((Get-SourceRecord (Join-Path $script:RepoRoot 'tests\cases\reviewed-core-cases.json')))
+    if((Get-SjcVersion) -ceq '0.17.0'){
+        $records.Add((Get-SourceRecord (Join-Path $script:RepoRoot 'src\QuickCleanGuiBridge.ps1')))
+        foreach($file in Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'engine\QuickClean.Host') -File | Sort-Object Name){$records.Add((Get-SourceRecord $file.FullName))}
+    }
     foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot 'tests') -Recurse -File -Filter '*.ps1' | Sort-Object FullName)) {
         $record = Get-SourceRecord $file.FullName
         if ($null -ne $record) { $records.Add($record) }
