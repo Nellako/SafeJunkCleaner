@@ -4,14 +4,17 @@
 Runs isolated quick-clean behavior checks in Windows PowerShell 5.1 against the supplied source snapshot.
 .DESCRIPTION
 When ExePath is supplied, also runs packaged SelfTest, bound to sibling build/source manifests.
+History and Crash require a staged QuickClean.Verification.exe alongside its DLL, runtime files and the input-bound Host DLL.
 .EXAMPLE
-powershell.exe -NoProfile -File .\Test-QuickCleanCore.ps1 -SourceRoot <snapshot> -EvidenceParent <authorized-GUID-directory>
+powershell.exe -NoProfile -File .\Test-QuickCleanCore.ps1 -SourceRoot <snapshot> -EvidenceParent <authorized-GUID-directory> -VerificationExePath <staged-verifier> -VerificationHostSha256 <host-dll-hash>
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$SourceRoot,
     [Parameter(Mandatory = $true)][string]$EvidenceParent,
     [string]$ExePath,
+    [string]$VerificationExePath,
+    [string]$VerificationHostSha256,
     [ValidateSet('Permanent','Replacement','ScanCancel','CleanCancel','Crash','History')][string[]]$Cases = @('Permanent','Replacement','ScanCancel','CleanCancel','Crash','History'),
     [ValidateSet('Permanent','Replacement','ScanCancel','CleanCancel','Crash','History')][string]$ChildCase,
     [string]$RunDirectory
@@ -82,7 +85,9 @@ function Read-BetaJson([string]$Path) {
 function Get-BetaSourceFiles([string]$Root) {
     $paths = @(Join-Path $Root 'version.json')
     foreach ($module in $script:SourceModules) { $paths += Join-Path $Root ('src\' + $module) }
-    if ($Cases -contains 'History') { $paths += Join-Path $Root 'src\Gui.ps1' }
+    if ($Cases -contains 'History') {
+        foreach ($name in @('Gui.ps1','QuickCleanGuiBridge.ps1','ExplorerGui.ps1')) { $paths += Join-Path $Root ('src\' + $name) }
+    }
     foreach ($path in $paths) {
         Assert-BetaPlainPath $path
         Get-FileHash -Algorithm SHA256 -LiteralPath $path | Select-Object Path,Hash
@@ -172,6 +177,35 @@ function Invoke-BetaExe([string]$Binary,[string]$Run,$Build) {
     Assert-BetaFile (Join-Path $root 'files\owned-kept.tmp') 'SafeJunkCleaner GUID synthetic file only'
     Write-BetaJson (Join-Path $directory 'result.json') ([ordered]@{Case='ExeSelfTest';Outcome='Pass';Build=$Build;ReportPath=$reportPaths[0];Report=$report})
 }
+function Get-BetaPackagedHostHash([string]$Binary) {
+    $root = [IO.Path]::GetDirectoryName($Binary)
+    $buildManifest = Read-BetaJson (Join-Path $root 'build-manifest.json')
+    $component = @($buildManifest.Components | Where-Object Name -CEQ 'ExplorerHost')
+    Assert-BetaEqual 1 $component.Count 'Packaged dual-host component must be unique'
+    $manifestPath = Join-Path $root 'explorer\host-component-manifest.json'
+    $manifest = Read-BetaJson $manifestPath
+    Assert-BetaEqual $component[0].ManifestSHA256 (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash 'Packaged Host manifest hash'
+    $entry = @($manifest.Components | Where-Object Path -CEQ 'sjc-quickclean.dll')
+    Assert-BetaEqual 1 $entry.Count 'Packaged QuickClean DLL must be unique'
+    $dll = Join-Path $root 'explorer\sjc-quickclean.dll'
+    Assert-BetaPlainPath $dll
+    $hash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash
+    Assert-BetaEqual $entry[0].SHA256 $hash 'Packaged QuickClean DLL hash'
+    return $hash
+}
+function Get-BetaVerificationFacts {
+    Assert-Beta ($VerificationHostSha256 -match '^[0-9A-Fa-f]{64}$') 'History/Crash require an expected QuickClean Host DLL SHA256.'
+    $exe = Get-BetaLocalPath $VerificationExePath
+    Assert-BetaEqual 'QuickClean.Verification.exe' ([IO.Path]::GetFileName($exe)) 'Expected the staged verifier apphost'
+    $root = [IO.Path]::GetDirectoryName($exe)
+    $files = @(foreach ($name in @('QuickClean.Verification.exe','QuickClean.Verification.dll','QuickClean.Verification.deps.json','QuickClean.Verification.runtimeconfig.json','sjc-quickclean.dll')) {
+        $path = Join-Path $root $name
+        Assert-BetaPlainPath $path
+        [pscustomobject]@{Name=$name;Path=$path;SHA256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash;Bytes=[IO.FileInfo]::new($path).Length}
+    })
+    Assert-BetaEqual $VerificationHostSha256.ToUpperInvariant() $files[-1].SHA256 'Staged QuickClean Host DLL differs from the requested input'
+    return [pscustomobject]@{Exe=$exe;Root=$root;Files=$files}
+}
 function Assert-BetaLog($Result,$Sandbox,[string]$Status,[string]$Task,[string]$Operation) {
     $logs = Join-Path $Sandbox.Context.StateRoot 'Logs'
     $path = Assert-BetaChildPath $Result.LogPath $logs
@@ -227,13 +261,92 @@ function Assert-BetaReplay($Sandbox,[string]$Task) {
     Assert-BetaLog $again $Sandbox 'Failed' $Task 'clean'
     return $again
 }
-function Invoke-BetaWorkerClean($Sandbox,[string]$Task,[string]$CancelPath,[string[]]$ExcludedIds=@()) {
-    $payload = Join-Path $Task 'beta.clean.payload.json'
-    $output = Join-Path $Task 'beta.clean.output.json'
-    Write-BetaJson $payload ([ordered]@{TaskDirectory=$Task;CancelPath=$CancelPath;ProgressPath='';ExcludedIds=$ExcludedIds;RecycleMode=$false;CleaningProfile='Medium';CustomEnabled=$true})
-    $result = Invoke-SjcWorker -Mode Clean -TestContext $Sandbox.Context -PayloadPath $payload -OutputPath $output
-    Assert-BetaEqual $result.Status (Read-BetaJson $output).Status 'Worker output status and return value disagree'
-    return $result
+function Invoke-BetaHostCase([string]$Case,[string]$Directory,[string]$HostRun) {
+    $facts = Get-BetaVerificationFacts
+    $parent = $EvidenceParent
+    $HostRun = Assert-BetaChildPath $HostRun $parent
+    Assert-BetaPlainPath $HostRun
+    $env:SJC_QC_CORE_CASE_DIRECTORY = $Directory
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $facts.Exe
+    $info.Arguments = 'core-fixture "{0}" "{1}" {2} {3}' -f $parent,$HostRun,$Case,$VerificationHostSha256
+    $info.WorkingDirectory = $Directory
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $info
+    $started = $false
+    try {
+        $started = $process.Start()
+        Assert-Beta $started 'Failed to start owned Host verification driver.'
+        $null = $process.Handle
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        Assert-Beta ($process.WaitForExit(900000)) 'Owned Host verification driver exceeded its bounded job timeouts.'
+        Write-BetaNewText (Join-Path $Directory 'host.stdout.txt') $stdout.GetAwaiter().GetResult()
+        Write-BetaNewText (Join-Path $Directory 'host.stderr.txt') $stderr.GetAwaiter().GetResult()
+        Assert-BetaEqual 0 $process.ExitCode "Owned Host verification failed; see $Directory"
+        $result = $stdout.Result | ConvertFrom-Json
+        Assert-BetaEqual $Case $result.Name 'Verification case mismatch'
+        Assert-BetaEqual 'Passed' $result.Outcome 'Verification driver did not report pass'
+        Assert-BetaEqual $parent $result.Parent 'Verification evidence parent mismatch'
+        $run = Assert-BetaChildPath $result.Run $parent
+        Assert-BetaEqual $HostRun $run 'Verification returned the wrong launcher-bound Host run'
+        $root = Assert-BetaChildPath $result.Root $run
+        $evidence = Join-Path $root ($Case + '.pass.json')
+        $checks = Read-BetaJson $evidence
+        if ($Case -eq 'History') {
+            # The real WPF bridge invokes the read-only verifier apphost transport,
+            # which freshly reopens this authenticated Host fixture; no injected rows.
+            . (Join-Path $SourceRoot 'src\ExplorerGui.ps1')
+            . (Join-Path $SourceRoot 'src\Gui.ps1')
+            $env:SJC_TEST_DRIVER_TOKEN = $env:SJC_QUICK_BETA_NONCE
+            $env:SJC_QC_VERIFY_PARENT = $parent
+            $env:SJC_QC_VERIFY_RUN = $run
+            $env:SJC_QC_VERIFY_ROOT = $root
+            $env:SJC_QC_VERIFY_HOST_SHA256 = $VerificationHostSha256
+            $id = [guid]::NewGuid().ToString('D')
+            $verification = @{Name='QuickCleanVerification';Root=$facts.Root;Paths=$facts.Files.Name;Hashes=$facts.Files.SHA256;Sizes=$facts.Files.Bytes;RejectLinks=$true;Extras=$false;Ancestors=$true;AllowedExtra=''}
+            $script:SjcQuickCleanTestContext = @{Id=$id;UseHostInTestMode=$true;LaunchSpec=@{TestId=$id;Exe=$facts.Exe;Verifications=@($verification)}}
+            $guiOnly = New-SjcTestSandbox -ParentDirectory (Join-Path $Directory 'gui-sandboxes')
+            $state = New-SjcGuiState $guiOnly.Context -TestMode
+            Assert-Beta ($state.History -is [System.Collections.IList]) 'QuickClean GUI history must be a list'
+            $app = New-SjcGuiApp $state
+            try {
+                $app.Ui.Window.Show()
+                $app.Ui.LogsToggle.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+                $app.Ui.Window.UpdateLayout()
+                Assert-BetaEqual 'Visible' ([string]$app.Ui.LogsPanel.Visibility) 'Task records did not open'
+                $displayed = @($app.Ui.HistoryList.Items | ForEach-Object { $_ })
+                Assert-BetaEqual $checks.AfterReplay.Count $displayed.Count 'WPF rows differ from persisted attempts'
+                for ($i = 0; $i -lt $displayed.Count; $i++) {
+                    foreach ($key in @('Time','Action','Status','Summary','TaskDirectory','LogPath')) {
+                        Assert-BetaEqual $checks.AfterReplay[$i].$key $displayed[$i].$key "WPF row $i field $key differs from actual Host history"
+                    }
+                }
+                $completedLog = $checks.Clean.Result.LogPath
+                $selectedIndex = -1
+                for ($i = 0; $i -lt $displayed.Count; $i++) { if ($displayed[$i].LogPath -ceq $completedLog) { $selectedIndex = $i } }
+                Assert-Beta ($selectedIndex -ge 0) 'Completed WPF row missing'
+                $app.Ui.HistoryList.SelectedIndex = $selectedIndex
+                Update-SjcGuiView $app
+                $selected = $app.Ui.HistoryList.SelectedItem
+                Assert-BetaEqual $completedLog $selected.LogPath 'Selecting completed history did not keep the intended row'
+                Assert-BetaEqual $checks.Clean.Result.ProcessedBytes $selected.Result.ProcessedBytes 'WPF did not load logical bytes from the actual clean log'
+                Save-SjcGuiRender $app.Ui.Window (Join-Path $Directory 'history-900x680.png')
+                Write-BetaJson (Join-Path $Directory 'history.json') $displayed
+            } finally {
+                $state.Busy = $false
+                $app.Ui.Window.Close()
+            }
+        }
+        Write-BetaJson (Join-Path $Directory 'result.json') ([ordered]@{Case=$Case;Outcome='Pass';Root=$root;HostEvidence=$evidence})
+    } finally {
+        if ($started -and -not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(5000) }
+        $process.Dispose()
+    }
 }
 
 $EvidenceParent = Get-BetaLocalPath $EvidenceParent
@@ -254,6 +367,10 @@ if ($ChildCase) {
     Assert-Beta (-not (Test-Path -LiteralPath $fixtureParent)) 'Sandbox parent already exists.'
     try {
         foreach ($module in $script:SourceModules) { . (Join-Path $SourceRoot ('src\' + $module)) }
+        if ($ChildCase -in 'History','Crash') {
+            Invoke-BetaHostCase $ChildCase $caseDirectory $owner.HostRun
+            exit 0
+        }
         $sandbox = New-SjcTestSandbox -ParentDirectory $fixtureParent
         $root = Assert-BetaChildPath $sandbox.Root $fixtureParent
         Assert-BetaPlainPath $root
@@ -332,80 +449,7 @@ if ($ChildCase) {
                 Assert-BetaFile $target 'scan cancellation fixture'
                 Assert-BetaLog $clean $sandbox 'Failed' $task 'clean'
             }
-            'History' {
-                $target = New-BetaOldFile $files 'history-approved.tmp' 'history permanent fixture'
-                $kept = New-BetaOldFile $files 'history-kept.tmp' 'history excluded fixture'
-                $scan = Invoke-BetaScan $sandbox $task 2 ''
-                $keepIds = @(Save-BetaFixtures $scan $files $caseDirectory | Where-Object Path -CEQ $kept | ForEach-Object Id)
-                Assert-BetaEqual 1 $keepIds.Count 'History keep candidate count'
-                $clean = Invoke-BetaWorkerClean $sandbox $task '' $keepIds
-                Assert-BetaEqual 'Success' $clean.Status 'History success fixture clean'
-                Assert-BetaEqual 1 $clean.Deleted 'History success fixture deletion count'
-                Assert-Beta (-not [IO.File]::Exists($target)) 'History success fixture still exists'
-                Assert-BetaLog $clean $sandbox 'Success' $task 'clean'
-                Assert-BetaFile $kept 'history excluded fixture'
-
-                $cancelTask = New-SjcTaskDirectory $sandbox.Context
-                $cancelTarget = New-BetaOldFile $files 'history-cancelled.tmp' 'history cancellation fixture'
-                $cancelScan = Invoke-BetaScan $sandbox $cancelTask 2 ''
-                $cancelEvidence = New-BetaDirectory $caseDirectory 'cancelled-plan'
-                $null = Save-BetaFixtures $cancelScan $files $cancelEvidence
-                $cancelChannel = Join-Path $cancelTask 'beta.cancel'
-                Write-BetaNewText $cancelChannel 'cancel'
-                $cancelClean = Invoke-BetaWorkerClean $sandbox $cancelTask $cancelChannel
-                Assert-BetaEqual 'Cancelled' $cancelClean.Status 'History cancellation fixture clean'
-                Assert-BetaEqual 0 $cancelClean.Deleted 'Pre-cancelled history fixture deletion count'
-                Assert-BetaFile $cancelTarget 'history cancellation fixture'
-                Assert-BetaLog $cancelClean $sandbox 'Cancelled' $cancelTask 'clean'
-
-                $history = Get-SjcQuickHistory $sandbox.Context
-                Assert-Beta ($history -is [System.Collections.IList]) 'History API must return a list'
-                Assert-BetaEqual 2 $history.Count 'History must contain exactly one row per worker attempt'
-                foreach ($entry in @(@{Task=$cancelTask;Result=$cancelClean;Status='已取消';Deleted=0},@{Task=$task;Result=$clean;Status='完成';Deleted=1})) {
-                    $rows = @($history.ToArray() | Where-Object TaskDirectory -CEQ $entry.Task)
-                    Assert-BetaEqual 1 $rows.Count 'History lost or duplicated a task'
-                    $row = $rows[0]
-                    Assert-BetaEqual '清理' $row.Action 'History action'
-                    Assert-BetaEqual $entry.Status $row.Status 'History status'
-                    Assert-BetaEqual $entry.Result.LogPath $row.LogPath 'History references the wrong actual operation log'
-                    Assert-Beta ($row.Summary -match ('处理\s+{0}\s+个' -f $entry.Deleted)) 'History summary did not report the real processed count'
-                    Assert-Beta ($row.Summary -match '逻辑大小' -and $row.Summary -notmatch '实际释放') 'History misstated logical size'
-                }
-                $reopened = Get-SjcQuickHistory $sandbox.Context
-                Assert-BetaEqual ($history | ConvertTo-Json -Depth 9 -Compress) ($reopened | ConvertTo-Json -Depth 9 -Compress) 'Re-reading history changed recorded outcomes'
-                $again = Assert-BetaReplay $sandbox $task
-                Assert-BetaFile $kept 'history excluded fixture'
-                Assert-BetaFile $cancelTarget 'history cancellation fixture'
-
-                # New WPF state must reopen genuine history from disk, not inject rows.
-                . (Join-Path $SourceRoot 'src\Gui.ps1')
-                $state = New-SjcGuiState $sandbox.Context -TestMode
-                $app = New-SjcGuiApp $state
-                try {
-                    $app.Ui.Window.Show()
-                    $app.Ui.LogsToggle.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-                    $app.Ui.Window.UpdateLayout()
-                    Assert-BetaEqual 'Visible' ([string]$app.Ui.LogsPanel.Visibility) 'Task records did not open'
-                    Assert-BetaEqual 2 $app.Ui.HistoryList.Items.Count 'Two actual outcomes should appear in history'
-                    $latest = $app.Ui.HistoryList.Items[0]
-                    $earlier = $app.Ui.HistoryList.Items[1]
-                    Assert-BetaEqual '已取消' $latest.Status 'Latest WPF record must identify cancellation'
-                    Assert-BetaEqual '完成' $earlier.Status 'Earlier WPF record must identify success'
-                    Assert-BetaEqual $cancelClean.LogPath $latest.LogPath 'Cancellation history references the wrong log'
-                    Assert-BetaEqual $clean.LogPath $earlier.LogPath 'Success history references the wrong log'
-                    Assert-Beta ($earlier.Summary -match '处理\s+1\s+个') 'History summary did not report the real processed count'
-                    Assert-Beta ($earlier.Summary -match '逻辑大小' -and $earlier.Summary -notmatch '实际释放') 'History misstated logical size'
-                    $app.Ui.HistoryList.SelectedIndex = 1
-                    Update-SjcGuiView $app
-                    Assert-BetaEqual $clean.LogPath $app.Ui.HistoryList.SelectedItem.LogPath 'Selecting completed history did not keep the intended row'
-                    Save-SjcGuiRender $app.Ui.Window (Join-Path $caseDirectory 'history-900x680.png')
-                    Write-BetaJson (Join-Path $caseDirectory 'history.json') @($latest,$earlier)
-                } finally {
-                    $state.Busy = $false
-                    $app.Ui.Window.Close()
-                }
-            }
-            { $_ -in 'CleanCancel','Crash' } {
+            'CleanCancel' {
                 $count = 256
                 for ($index = 0; $index -lt $count; $index++) {
                     [void](New-BetaOldFile $files ('batch-{0:D4}.tmp' -f $index) ('candidate ' + $index))
@@ -422,11 +466,6 @@ if ($ChildCase) {
                 while (-not [IO.File]::Exists($start)) {
                     if ($timer.Elapsed.TotalSeconds -gt 30) { throw 'Owned supervisor did not release startup barrier.' }
                     Start-Sleep -Milliseconds 15
-                }
-                if ($ChildCase -eq 'Crash') {
-                    $clean = Invoke-BetaWorkerClean $sandbox $task $cancel
-                    Write-BetaJson (Join-Path $caseDirectory 'unexpected-return.json') $clean
-                    throw 'Cleaner returned before interruption; no crash test passed.'
                 }
                 $clean = Invoke-SjcClean -Context $sandbox.Context -TaskDirectory $task -RecycleMode $false -CancelPath $cancel -CustomEnabled $true
                 Assert-BetaEqual 'Cancelled' $clean.Status ('Clean did not stop on cancellation: ' + $clean.Error)
@@ -452,12 +491,22 @@ if ($ChildCase) {
 }
 
 function Invoke-BetaChild([string]$Name,[string]$Run,[string]$Nonce) {
+    if ($Name -eq 'History') { $Name = 'History' }
+    if ($Name -eq 'Crash') { $Name = 'Crash' }
     $directory = New-BetaDirectory $Run $Name
-    Write-BetaJson (Join-Path $directory 'owner.json') ([ordered]@{Nonce=$Nonce;Case=$Name;SourceRoot=$SourceRoot})
+    $owner = [ordered]@{Nonce=$Nonce;Case=$Name;SourceRoot=$SourceRoot}
+    if ($Name -in 'History','Crash') {
+        # Keep real Host paths short while retaining a private, exclusive GUID tree.
+        $owner['HostRun'] = New-BetaDirectory $EvidenceParent ([guid]::NewGuid().ToString('D'))
+    }
+    Write-BetaJson (Join-Path $directory 'owner.json') $owner
     $temp = New-BetaDirectory $directory 'tmp'
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = Join-Path $PSHOME 'powershell.exe'
     $info.Arguments = '-NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File "{0}" -SourceRoot "{1}" -EvidenceParent "{2}" -RunDirectory "{3}" -ChildCase {4}' -f $PSCommandPath,$SourceRoot,$EvidenceParent,$Run,$Name
+    if ($Name -in 'History','Crash') {
+        $info.Arguments += ' -VerificationExePath "{0}" -VerificationHostSha256 {1}' -f $VerificationExePath,$VerificationHostSha256
+    }
     $info.WorkingDirectory = $directory
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
@@ -476,7 +525,7 @@ function Invoke-BetaChild([string]$Name,[string]$Run,[string]$Nonce) {
         $null = $process.Handle
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
-        if ($Name -in 'Crash','CleanCancel') {
+        if ($Name -eq 'CleanCancel') {
             $readyPath = Join-Path $directory 'ready.json'
             $clock = [Diagnostics.Stopwatch]::StartNew()
             while (-not [IO.File]::Exists($readyPath)) {
@@ -499,41 +548,11 @@ function Invoke-BetaChild([string]$Name,[string]$Run,[string]$Nonce) {
             }
             $observedUtc = [datetime]::UtcNow.ToString('o')
             Assert-Beta (-not $process.HasExited) 'Claim appeared after child exit, not during work.'
-            if ($Name -eq 'CleanCancel') {
-                Write-BetaNewText (Join-Path $task 'beta.cancel') 'cancel'
-                Write-BetaJson (Join-Path $directory 'signal.json') ([ordered]@{Pid=$ready.Pid;Claim=$claim;ObservedUtc=$observedUtc;Signal='CancelChannel'})
-            } else {
-                $process.Kill()
-                Assert-Beta ($process.WaitForExit(5000)) 'Owned child did not exit after Kill.'
-                Assert-Beta ($process.ExitCode -ne 0) 'Killed child reported exit zero.'
-                Assert-Beta (-not [IO.File]::Exists((Join-Path $directory 'unexpected-return.json'))) 'Cleaner completed normally before termination.'
-                Assert-BetaPlainPath $claim
-                Assert-Beta (-not [IO.File]::Exists((Join-Path $task 'beta.clean.output.json'))) 'Killed worker published a terminal result.'
-                # Public test contexts are process-local. Read the real, owned
-                # authenticated recovery evidence without impersonating its context.
-                . (Join-Path $SourceRoot 'src\Core.ps1')
-                $records = @([IO.Directory]::GetFiles($task,'.history-*',[IO.SearchOption]::TopDirectoryOnly))
-                Assert-BetaEqual 1 $records.Count 'Interrupted worker did not leave exactly one task history record'
-                Assert-BetaPlainPath $records[0]
-                $history = Unprotect-SjcText ([IO.File]::ReadAllText($records[0],[Text.Encoding]::UTF8)) | ConvertFrom-Json
-                Assert-BetaEqual ([IO.Path]::GetFileName($task)) $history.TaskId 'Interrupted history task identity'
-                Assert-BetaEqual 'Clean' $history.Action 'Interrupted history operation'
-                Assert-BetaEqual 'Unknown' $history.Status 'Interrupted history asserted a definitive outcome'
-                Assert-Beta ($history.Summary -match '结果未知' -and $history.Summary -match '可能') 'Interrupted history failed to disclose potential partial processing.'
-                $survivors = @([IO.Directory]::GetFiles((Join-Path $root 'files'),'batch-*.tmp',[IO.SearchOption]::TopDirectoryOnly) | Sort-Object)
-                Assert-Beta ($survivors.Count -gt 0) 'No fixtures survived: interruption missed the execution window.'
-                Assert-BetaFile (Join-Path $root 'outside-rules.tmp') 'outside-rule sentinel'
-                Assert-BetaFile (Join-Path $root 'files\not-selected.txt') 'non-candidate sentinel'
-                foreach ($path in $survivors) {
-                    $index = [int]([IO.Path]::GetFileNameWithoutExtension($path).Substring(6))
-                    Assert-BetaFile $path ('candidate ' + $index)
-                }
-                $result = [ordered]@{Case=$Name;Outcome='Pass';Root=$root;Task=$task;Claim=$claim;ClaimObservedUtc=$observedUtc;Pid=$ready.Pid;ExitCode=$process.ExitCode;Planned=$ready.Count;Survivors=$survivors;Scan=$ready.Scan;History=$history}
-                Write-BetaJson (Join-Path $directory 'result.json') $result
-                return $result
-            }
+            Write-BetaNewText (Join-Path $task 'beta.cancel') 'cancel'
+            Write-BetaJson (Join-Path $directory 'signal.json') ([ordered]@{Pid=$ready.Pid;Claim=$claim;ObservedUtc=$observedUtc;Signal='CancelChannel'})
         }
-        Assert-Beta ($process.WaitForExit(60000)) 'Owned child timed out.'
+        $timeout = if ($Name -in 'History','Crash') { 960000 } else { 60000 }
+        Assert-Beta ($process.WaitForExit($timeout)) 'Owned child timed out.'
         Assert-BetaEqual 0 $process.ExitCode "Child returned failure; see $directory"
         $result = Read-BetaJson (Join-Path $directory 'result.json')
         Assert-BetaEqual 'Pass' $result.Outcome 'Child did not produce a passing result'
@@ -552,12 +571,22 @@ $run = New-BetaDirectory $EvidenceParent ('qc-' + $nonce)
 Write-Host "Evidence: $run"
 $before = @(Get-BetaSourceFiles $SourceRoot)
 $build = $null
+$verification = $null
 if ($ExePath) {
     $ExePath = Get-BetaLocalPath $ExePath
     $build = Get-BetaBuildFacts $ExePath $before
 }
+if ($Cases -contains 'History' -or $Cases -contains 'Crash') {
+    if ($build) {
+        $hostHash = Get-BetaPackagedHostHash $ExePath
+        if ($VerificationHostSha256) { Assert-BetaEqual $hostHash $VerificationHostSha256.ToUpperInvariant() 'Requested Host differs from packaged Host' }
+        $VerificationHostSha256 = $hostHash
+    }
+    $verification = Get-BetaVerificationFacts
+    $VerificationExePath = $verification.Exe
+}
 $testHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
-Write-BetaJson (Join-Path $run 'inputs.json') ([ordered]@{SourceRoot=$SourceRoot;Files=$before;Build=$build;TestSha256=$testHash;Cases=$Cases;StartedUtc=[datetime]::UtcNow.ToString('o')})
+Write-BetaJson (Join-Path $run 'inputs.json') ([ordered]@{SourceRoot=$SourceRoot;Files=$before;Build=$build;Verification=$verification;HostSha256=$VerificationHostSha256;TestSha256=$testHash;Cases=$Cases;StartedUtc=[datetime]::UtcNow.ToString('o')})
 $summary = @(
     foreach ($name in ($Cases | Select-Object -Unique)) {
         try {
@@ -586,6 +615,12 @@ $artifactStable = $true
 if ($build) {
     try { $artifactStable = (($build | ConvertTo-Json -Compress) -ceq ((Get-BetaBuildFacts $ExePath $after) | ConvertTo-Json -Compress)) }
     catch { $artifactStable = $false }
+}
+if ($verification) {
+    try {
+        $artifactStable = $artifactStable -and (($verification | ConvertTo-Json -Depth 6 -Compress) -ceq ((Get-BetaVerificationFacts) | ConvertTo-Json -Depth 6 -Compress))
+        if ($build) { $artifactStable = $artifactStable -and ($VerificationHostSha256 -ceq (Get-BetaPackagedHostHash $ExePath)) }
+    } catch { $artifactStable = $false }
 }
 $failed = @($summary | Where-Object Outcome -EQ 'Fail').Count
 Write-BetaJson (Join-Path $run 'summary.json') ([ordered]@{SourceAndTestStable=$stable;ArtifactStable=$artifactStable;Build=$build;Passed=($summary.Count - $failed);Failed=$failed;Cases=$summary;FinishedUtc=[datetime]::UtcNow.ToString('o')})

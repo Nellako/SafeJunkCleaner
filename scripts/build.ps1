@@ -44,8 +44,9 @@ $modules=foreach($relative in $sourceFiles[1..($sourceFiles.Count-1)]){"`r`n# re
 $marker='# <SJC-MODULES>'
 if(($entry.Split(@($marker),[StringSplitOptions]::None)).Count -ne 2){throw 'Expected exactly one module marker.'}
 $embedded='$script:SjcEmbeddedVersion = '+"[pscustomobject]@{version='$version';fileVersion='$fileVersion';planSchemaVersion=$($metadata.planSchemaVersion)}`r`n"
-if($metadata.PSObject.Properties['channel'] -and $metadata.channel -cmatch '^beta(?:\.[1-9][0-9]*)?$'){
-    $embedded += '$script:SjcDisplayVersion = '+"'$version-$($metadata.channel)'`r`n"
+$displayVersion=Get-SjcDisplayVersion
+if($displayVersion -cne $version){
+    $embedded += '$script:SjcDisplayVersion = '+"'$displayVersion'`r`n"
 }
 $iconBase64=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root 'assets\app.ico')))
 $embedded += '$script:SjcEmbeddedIconBase64 = '+"'$iconBase64'`r`n"

@@ -12,11 +12,27 @@ internal static partial class VerifyHost
 {
     private static Assembly HostAssembly() => typeof(Jobs).Assembly;
 
+    // Test-only executable transport for the real GUI bridge. No arbitrary state or
+    // operation is accepted; reopen only the authenticated fixture of this launcher.
+    private static int GuiHistory()
+    {
+        var parent = Environment.GetEnvironmentVariable("SJC_QC_VERIFY_PARENT") ?? "";
+        var run = Environment.GetEnvironmentVariable("SJC_QC_VERIFY_RUN") ?? "";
+        var root = Environment.GetEnvironmentVariable("SJC_QC_VERIFY_ROOT") ?? "";
+        var hash = Environment.GetEnvironmentVariable("SJC_QC_VERIFY_HOST_SHA256") ?? "";
+        RequireHostHash(hash);
+        var fixture = OpenForChild(parent, run, root, core: true);
+        Require(fixture.Case == "History", "GUI transport only reopens a History fixture.");
+        Console.WriteLine(JsonSerializer.Serialize(new Jobs(fixture.State, fixture.Files).Query("History", Parse(Console.In.ReadToEnd()))));
+        return 0;
+    }
+
     private static int Child(string[] args)
     {
         Require(args.Length >= 5, "Missing owned child arguments.");
-        var fixture = OpenForChild(args[1], args[2], args[3]);
-        Require(FixtureCases.Contains(fixture.Case), "Unknown owned fixture case.");
+        var fixture = OpenForChild(args[1], args[2], args[3], core: args[0] == "_core-child");
+        // History is a typed QuickCleanCore case, not a legacy suite/fixture entry.
+        Require(FixtureCases.Contains(fixture.Case) || fixture.Case == "History", "Unknown owned fixture case.");
         var jobs = new Jobs(fixture.State, fixture.Files);
         if (args is [_, _, _, _, "history"])
         {
@@ -61,7 +77,7 @@ internal static partial class VerifyHost
     {
         var launched = Environment.ProcessPath ?? throw new InvalidOperationException("Process path unavailable.");
         var file = Paths.Equals(Path.GetFileName(launched), "dotnet.exe") ? new[] { Assembly.GetExecutingAssembly().Location } : [];
-        var info = NewProcess(launched, fixture.Root, temp, [.. file, "_child", fixture.Parent, fixture.Run, fixture.Root, .. args]);
+        var info = NewProcess(launched, fixture.Root, temp, [.. file, fixture.Core ? "_core-child" : "_child", fixture.Parent, fixture.Run, fixture.Root, .. args]);
         info.Environment[ChildToken] = fixture.Nonce;
         return new Running(info);
     }

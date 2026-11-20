@@ -20,7 +20,10 @@ internal static partial class VerifyHost
         try
         {
             Require(OperatingSystem.IsWindows(), "Windows is required.");
-            if (args is ["_child", ..]) return Child(args);
+            if (args is ["_child" or "_core-child", ..]) return Child(args);
+            if (args is ["query", "History"]) return GuiHistory();
+            if (args is ["core-fixture", var coreParent, var coreRun, var coreCase, var hostHash] && coreCase is "History" or "Crash")
+                return CoreFixture(coreParent, coreRun, coreCase, hostHash);
             if (args is ["suite", var parent, var binary, var hash, "--recycle-one"])
                 return Suite(parent, binary, hash, true);
             if (args is ["suite", var parent2, var binary2, var hash2])
@@ -36,6 +39,99 @@ internal static partial class VerifyHost
             Console.Error.WriteLine(ex);
             return 99;
         }
+    }
+
+    private static Artifact RequireHostHash(string expectedHash)
+    {
+        var actual = Art(HostAssembly().Location);
+        Require(expectedHash.Length == 64 && Paths.Equals(expectedHash, actual.SHA256), "Loaded Host DLL hash differs from the requested input.");
+        return actual;
+    }
+
+    private static int CoreFixture(string parent, string run, string name, string hostHash)
+    {
+        parent = Canonical(parent);
+        run = Canonical(run);
+        var owner = CheckAuthorizedCoreRun(parent, run);
+        Require(owner.Case == name && !Directory.EnumerateFileSystemEntries(run).Any(), "Core case must use its own fresh launcher-bound Host run.");
+        const string sampleGuid = "00000000-0000-0000-0000-000000000000";
+        var sampleTask = Path.Combine(run, sampleGuid, "state", "Tasks", sampleGuid);
+        // Reserve space for the longest output plus the Host's atomic and history paths.
+        Require(Path.Combine(sampleTask, "history-cancel-scan.output.json").Length <= 249 &&
+            Path.Combine(sampleTask, ".history-" + new string('0', 32)).Length <= 259,
+            "Core Host run is too deep for Windows PowerShell 5.1 to read the operation logs; use a shallower GUID EvidenceParent.");
+        var host = RequireHostHash(hostHash);
+        var temp = CreatePrivate(run, "temp");
+        var fixture = OwnedQuickCleanFixture.Create(run, parent, name == "Crash" ? "Interrupted" : name, owner.Nonce);
+        Save(Path.Combine(run, "inputs.json"), new { Driver = Art(Assembly.GetExecutingAssembly().Location), HostReferencedAssembly = host });
+        var checks = new List<CheckResult>();
+        Record(name, fixture.Root, () => name == "History" ? ExerciseHistory(fixture, temp) : Exercise(fixture, temp), checks, false);
+        Require(RequireHostHash(hostHash) == host, "Host input changed during fixture.");
+        var result = checks.Single();
+        Console.WriteLine(JsonSerializer.Serialize(new { fixture.Parent, fixture.Run, fixture.Root, Name = result.Case, result.Outcome, result.Detail }));
+        return result.Outcome == "Passed" ? 0 : 1;
+    }
+
+    private static object ExerciseHistory(OwnedQuickCleanFixture fixture, string temp)
+    {
+        Equal(0, History(fixture, temp, "empty-history").GetArrayLength(), "A fresh fixture must not inherit history from any other state root");
+        var outside = fixture.FixtureFile("outside-rules.tmp", "outside-rule sentinel", outside: true);
+        var control = fixture.FixtureFile("not-selected.txt", "non-candidate sentinel");
+        var target = fixture.FixtureFile("history-approved.tmp", "history permanent fixture");
+        var kept = fixture.FixtureFile("history-kept.tmp", "history excluded fixture");
+        var task = fixture.CreateTask();
+        var scan = RunJob(fixture, task, temp, Scan, "history-scan", "");
+        AssertStatus(scan.Result, "Success");
+        Equal(2, Int(scan.Result, "CandidateCount"), "History success plan count");
+        var plan = CheckPlan(task, scan.Result, fixture.Files, [target, kept]);
+        var bytes = new FileInfo(target).Length;
+        var clean = RunJob(fixture, task, temp, Clean, "history-clean", "", [plan[kept]]);
+        AssertStatus(clean.Result, "Success");
+        Equal(1, Int(clean.Result, "Deleted"), "History successful deletion count");
+        Equal(1, Int(clean.Result, "Skipped"), "History explicit exclusion count");
+        Equal(bytes, Int(clean.Result, "ProcessedBytes"), "History logical processed bytes");
+        Missing(target);
+        AssertFile(kept, "history excluded fixture");
+
+        var cancelTask = fixture.CreateTask();
+        var cancelTarget = fixture.FixtureFile("history-cancelled.tmp", "history cancellation fixture");
+        var cancelScan = RunJob(fixture, cancelTask, temp, Scan, "history-cancel-scan", "");
+        AssertStatus(cancelScan.Result, "Success");
+        Equal(2, Int(cancelScan.Result, "CandidateCount"), "History cancellation plan count");
+        _ = CheckPlan(cancelTask, cancelScan.Result, fixture.Files, [kept, cancelTarget]);
+        var cancel = Path.Combine(cancelTask, "verify.cancel");
+        WriteNew(cancel, "cancel");
+        var cancelled = RunJob(fixture, cancelTask, temp, Clean, "history-cancelled", cancel);
+        AssertStatus(cancelled.Result, "Cancelled");
+        Equal(0, Int(cancelled.Result, "Deleted"), "Pre-cancelled history deletion count");
+        Equal(0, Int(cancelled.Result, "ProcessedBytes"), "Pre-cancelled history logical bytes");
+        Require(!Path.Exists(Path.Combine(cancelTask, "clean.claimed")), "Pre-cancellation claimed a plan.");
+
+        var before = History(fixture, temp, "recorded-history");
+        Equal(4, before.GetArrayLength(), "One persisted row per scan and clean attempt");
+        _ = BindHistoryLog(before, task, Scan, "Success", scan);
+        _ = BindHistoryLog(before, cancelTask, Scan, "Success", cancelScan);
+        var completedRow = BindHistoryLog(before, task, Clean, "Success", clean);
+        var cancelledRow = BindHistoryLog(before, cancelTask, Clean, "Cancelled", cancelled);
+        Require(before[0].GetRawText() == cancelledRow.GetRawText() && before[2].GetRawText() == completedRow.GetRawText(),
+            "History is not ordered newest-first across the two actual outcomes.");
+        foreach (var (row, count, skipped) in new[] { (completedRow, 1, 1), (cancelledRow, 0, 0) })
+        {
+            var summary = Text(row, "Summary");
+            Require(summary.Contains($"处理 {count} 个") && summary.Contains($"跳过 {skipped} 个") && !summary.Contains("实际释放"),
+                "History summary did not describe actual processed/excluded counts or asserted freed space.");
+        }
+        Require(before.GetRawText() == History(fixture, temp, "reopened-history").GetRawText(), "Reopening changed persisted outcomes.");
+
+        var replay = RunJob(fixture, task, temp, Clean, "history-replay", "");
+        AssertFailedReplay(replay, Path.Combine(task, "clean.claimed"));
+        var after = History(fixture, temp, "history-after-completed-replay");
+        AssertOnlyReplayAdded(before, after, task, replay);
+        AssertFile(kept, "history excluded fixture");
+        AssertFile(cancelTarget, "history cancellation fixture");
+        AssertFile(outside, "outside-rule sentinel");
+        AssertFile(control, "non-candidate sentinel");
+        return new { Task = task, CancelTask = cancelTask, Scan = scan, Clean = clean, Cancelled = cancelled, Replay = replay, BeforeReplay = before, AfterReplay = after };
     }
 
     private static int SingleFixture(string parent, string name)
@@ -160,17 +256,23 @@ internal static partial class VerifyHost
             Require(survivors.Length > 0, "No approved fixture survived; interruption missed execution.");
             foreach (var path in survivors) AssertFile(path, planned[path]);
             var before = History(fixture, temp, "interrupted-history");
+            Equal(2, before.GetArrayLength(), "Interrupted task must have exactly its scan and interrupted clean rows");
+            _ = BindHistoryLog(before, task, Scan, "Success", scan);
             var interrupted = RequireRow(before, task, "Clean", "Unknown");
             var explanation = Text(interrupted, "Summary");
-            Require(explanation.Contains("未知") || explanation.Contains("unknown", StringComparison.OrdinalIgnoreCase) ||
-                explanation.Contains("可能已部分处理"), "History must disclose that the interrupted outcome is unknown or potentially partial.");
+            Require(Text(interrupted, "Status") == "结果未知" && explanation.Contains("可能已部分处理") &&
+                interrupted.GetProperty("Result").ValueKind == JsonValueKind.Null,
+                "History must mark an unknown outcome and warn about potentially partial execution without providing a definitive result.");
+            Require(before.GetRawText() == History(fixture, temp, "reopened-interrupted-history").GetRawText(),
+                "A fresh process did not reopen the recorded interruption consistently.");
             var replay = RunJob(fixture, task, temp, Clean, "interrupted-replay", "");
             AssertFailedReplay(replay, claim);
             Require(survivors.SequenceEqual(planned.Keys.Where(File.Exists).Order(Paths), Paths), "Replay after interruption removed surviving candidates.");
+            foreach (var path in survivors) AssertFile(path, planned[path]);
             var after = History(fixture, temp, "history-after-replay");
-            _ = RequireRow(after, task, "Clean", "Unknown");
+            AssertOnlyReplayAdded(before, after, task, replay);
             AssertSentinels(outside, younger, control);
-            return new { Task = task, Scan = scan, Interrupted = cut, Survived = survivors.Length, Replay = replay, BeforeReplay = before, AfterReplay = after };
+            return new { Task = task, Scan = scan, Interrupted = cut, Survivors = survivors, Replay = replay, BeforeReplay = before, AfterReplay = after };
         }
         if (fixture.Case == "CleanCancelled")
         {
@@ -308,13 +410,14 @@ internal static partial class VerifyHost
     {
         CheckPlain(claim);
         AssertStatus(replay.Result, "Failed");
+        if (replay.Result.TryGetProperty("Reviewed", out var reviewed)) Equal(0, reviewed.GetInt64(), "Old plan replay reviewed a fixture");
         Equal(0, Int(replay.Result, "Deleted"), "Old plan replay deleted a fixture");
         Equal(0, Int(replay.Result, "ProcessedBytes"), "Old plan replay reported processed bytes");
     }
 
     private static CutResult Interrupt(OwnedQuickCleanFixture fixture, string task, string temp, string cancel, string claim)
     {
-        var (payload, output) = Channels(task, Clean, "interrupted", cancel, [], false);
+        var (payload, output) = Channels(task, Clean, "interrupted", cancel, [], false, fixture.Core);
         using var child = StartDriver(fixture, temp, "job", Clean, payload, output);
         try
         {
@@ -336,7 +439,7 @@ internal static partial class VerifyHost
 
     private static JobResult CancelDuringClean(OwnedQuickCleanFixture fixture, string task, string temp, string cancel, string claim)
     {
-        var (payload, output) = Channels(task, Clean, "active-cancel", cancel, [], false);
+        var (payload, output) = Channels(task, Clean, "active-cancel", cancel, [], false, fixture.Core);
         using var child = StartDriver(fixture, temp, "job", Clean, payload, output);
         var observed = ObserveClaim(child, output, claim);
         WriteNew(cancel, "cancel");
@@ -359,11 +462,12 @@ internal static partial class VerifyHost
         return observed;
     }
 
-    private static (string Payload, string Output) Channels(string task, string action, string attempt, string cancel, string[] excluded, bool recycle)
+    private static (string Payload, string Output) Channels(string task, string action, string attempt, string cancel, string[] excluded, bool recycle, bool core)
     {
         CheckPrivate(task);
         var payload = Path.Combine(task, attempt + ".payload.json");
         var output = Path.Combine(task, attempt + ".output.json");
+        Require(!core || output.Length <= 249, "QuickCleanCore operation output path exceeds 249 characters.");
         var request = new Dictionary<string, object>
         {
             ["TaskDirectory"] = task, ["CancelPath"] = cancel, ["ProgressPath"] = "", ["CleaningProfile"] = "Medium", ["CustomEnabled"] = true
@@ -377,7 +481,7 @@ internal static partial class VerifyHost
     private static JobResult RunJob(OwnedQuickCleanFixture fixture, string task, string temp, string action, string attempt,
         string cancel, string[]? excluded = null, bool recycle = false)
     {
-        var (payload, output) = Channels(task, action, attempt, cancel, excluded ?? [], recycle);
+        var (payload, output) = Channels(task, action, attempt, cancel, excluded ?? [], recycle, fixture.Core);
         using var child = StartDriver(fixture, temp, "job", action, payload, output);
         var done = child.Finish(120_000);
         Save(Path.Combine(fixture.Root, attempt + ".process.json"), done);
@@ -390,6 +494,7 @@ internal static partial class VerifyHost
         var json = Parse(File.ReadAllText(output));
         var status = Text(json, "Status");
         Require(!string.IsNullOrWhiteSpace(status) && (status == "Success") == (exitCode == 0), "Native exit code disagrees with job status.");
+        Require(Text(json, "LogPath") == output, "Operation result refers to the wrong output channel.");
         return new(exitCode, json);
     }
 
@@ -409,13 +514,45 @@ internal static partial class VerifyHost
         return value;
     }
 
+    private static JsonElement BindHistoryLog(JsonElement rows, string task, string action, string status, JobResult job)
+    {
+        var row = RequireRow(rows, task, action, status);
+        AssertStatus(job.Result, status);
+        if (status == "Failed")
+        {
+            // The Host's exception result has no TaskId. Bind it through the owned
+            // output path and verify that the history recorded its actual reason.
+            var reason = Text(job.Result, "Error");
+            Require(!string.IsNullOrWhiteSpace(reason) && Text(row, "Summary") == "未完成：" + reason,
+                "Failed history did not record the actual rejection reason.");
+        }
+        else Require(Text(job.Result, "TaskId") == Path.GetFileName(task), "Operation log task ID differs from recorded task.");
+        var log = Text(row, "LogPath");
+        Require(log == Text(job.Result, "LogPath"), "History linked the wrong operation output.");
+        CheckDirect(log, task);
+        CheckFileOwner(log);
+        Require(Parse(File.ReadAllText(log)).GetRawText() == job.Result.GetRawText(), "Recorded log no longer matches the actual operation result.");
+        return row;
+    }
+
+    private static void AssertOnlyReplayAdded(JsonElement before, JsonElement after, string task, JobResult replay)
+    {
+        Equal(before.GetArrayLength() + 1, after.GetArrayLength(), "Replay must add exactly one refused attempt");
+        var refused = BindHistoryLog(after, task, Clean, "Failed", replay).GetRawText();
+        Require(after.EnumerateArray().Select(row => row.GetRawText()).Where(row => row != refused)
+            .SequenceEqual(before.EnumerateArray().Select(row => row.GetRawText())), "Replay rewrote or dropped previously recorded history.");
+    }
+
     private static JsonElement RequireRow(JsonElement rows, string task, string action, string status)
     {
-        var actionLabel = action == Clean ? "清理" : "扫描";
-        var statusLabel = status switch { "Success" => "完成", "Cancelled" => "已取消", "Unknown" => "结果未知", _ => status };
+        var actionLabel = action switch { Clean => "清理", Scan => "扫描", _ => throw new ArgumentOutOfRangeException(nameof(action)) };
+        var statusLabel = status switch
+        {
+            "Success" => "完成", "Cancelled" => "已取消", "Unknown" => "结果未知", "Failed" => "失败",
+            _ => throw new ArgumentOutOfRangeException(nameof(status))
+        };
         var matches = rows.EnumerateArray().Where(row => Paths.Equals(task, Text(row, "TaskDirectory")) &&
-            Text(row, "Action") is var a && (a == action || a == actionLabel) &&
-            Text(row, "Status") is var s && (s == status || s == statusLabel)).ToArray();
+            Text(row, "Action") == actionLabel && Text(row, "Status") == statusLabel).ToArray();
         Equal(1, matches.Length, $"History requires one {action}/{status} row for {task}; actual {rows.GetRawText()}");
         Require(!string.IsNullOrWhiteSpace(Text(matches[0], "Summary")), "History row summary missing.");
         if (status != "Unknown") Require(File.Exists(Text(matches[0], "LogPath")), "Terminal row must link a real operation log.");

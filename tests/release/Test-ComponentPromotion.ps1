@@ -52,7 +52,7 @@ try {
     Put (Join-Path $source '.gitattributes') '* -text'
     Put (Join-Path $source '.gitignore') 'releases/'
     foreach ($p in @(Get-LpProductSources '0.16.1')+@('scripts/build.ps1','assets/app.ico')) { Put (Join-Path $source $p) '# SYNTHETIC GATE INPUT; NEVER RUN AS PRODUCT' }
-    Put (Join-Path $source 'src/Version.ps1') "function Get-SjcVersion { return '0.16.1' }"
+    Put (Join-Path $source 'src/Version.ps1') "function Get-SjcVersion { return '0.16.1' }`nfunction Get-SjcPrereleaseChannel { return }"
     Json (Join-Path $source 'version.json') @{version='0.16.1';fileVersion='0.16.1.0'}
     foreach ($p in @('scripts/local-promotion-common.ps1','scripts/seal-local-promotion.ps1','scripts/promote-local.ps1','scripts/publish.ps1','scripts/package-local.ps1','scripts/package-candidate.ps1','tests/run_all.ps1')) { Put (Join-Path $source $p) ([IO.File]::ReadAllText((Join-Path $Repository $p),[Text.Encoding]::UTF8)) }
     foreach ($p in @(Get-LpDeliveryDocuments '0.16.1')) { Put (Join-Path $source $p) ('Synthetic public document only: '+$p) }

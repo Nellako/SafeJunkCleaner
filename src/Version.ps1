@@ -9,11 +9,16 @@ function Get-SjcVersionInfo {
     return $value
 }
 function Get-SjcVersion { return [string](Get-SjcVersionInfo).version }
+function Get-SjcPrereleaseChannel {
+    $info=Get-SjcVersionInfo
+    if($info.PSObject.Properties['channel'] -and $info.channel -cmatch '^(?:beta|rc)(?:\.[1-9][0-9]*)?$'){return [string]$info.channel}
+}
 function Get-SjcDisplayVersion {
     $display=Get-Variable -Scope Script -Name SjcDisplayVersion -ValueOnly -ErrorAction SilentlyContinue
     if($display){return [string]$display}
-    $info=Get-SjcVersionInfo
-    if($info.PSObject.Properties['channel'] -and $info.channel -cmatch '^beta(?:\.[1-9][0-9]*)?$'){return "$($info.version)-$($info.channel)"}
-    return [string]$info.version
+    $version=Get-SjcVersion
+    $channel=Get-SjcPrereleaseChannel
+    if($channel){return "$version-$channel"}
+    return $version
 }
 function Get-SjcPlanSchemaVersion { return [int](Get-SjcVersionInfo).planSchemaVersion }

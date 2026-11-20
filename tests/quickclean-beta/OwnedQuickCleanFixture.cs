@@ -7,33 +7,68 @@ using System.Text.Json;
 
 namespace QuickClean.Verification;
 
-internal sealed record OwnedQuickCleanFixture(string Root, string Case, string Run, string Parent, string Nonce)
+internal sealed record OwnedQuickCleanFixture(string Root, string Case, string Run, string Parent, string Nonce, bool Core)
 {
     internal const string Version = "0.17.0";
     internal const string ChildToken = "SJC_TEST_DRIVER_TOKEN";
+    internal const string CoreToken = "SJC_QUICK_BETA_NONCE";
+    internal const string CoreCaseDirectory = "SJC_QC_CORE_CASE_DIRECTORY";
     private static readonly SecurityIdentifier CurrentUser = WindowsIdentity.GetCurrent().User!;
     private static readonly SecurityIdentifier SystemUser = new(WellKnownSidType.LocalSystemSid, null);
     internal string Files => Path.Combine(Root, "files");
     internal string State => Path.Combine(Root, "state");
     internal string Tasks => Path.Combine(State, "Tasks");
 
-    internal static string CheckAuthorizedParent(string path)
+    private static string CheckGuidParent(string path)
     {
         path = Canonical(path);
         Require(Guid.TryParseExact(Path.GetFileName(path), "D", out _), "Evidence parent must be an existing GUID directory.");
-        Require(string.Equals(Path.GetFileName(Path.GetDirectoryName(path)), "SafeJunkCleaner-Work", StringComparison.OrdinalIgnoreCase),
-            "Evidence parent must be a direct child of the authorized work directory.");
         Require(new DriveInfo(Path.GetPathRoot(path)!).DriveType == DriveType.Fixed, "Only a fixed local drive is supported.");
         CheckPlain(path);
         return path;
     }
 
-    internal static OwnedQuickCleanFixture Create(string run, string evidenceParent, string @case)
+    internal static string CheckAuthorizedParent(string path)
+    {
+        path = CheckGuidParent(path);
+        Require(string.Equals(Path.GetFileName(Path.GetDirectoryName(path)), "SafeJunkCleaner-Work", StringComparison.OrdinalIgnoreCase),
+            "Evidence parent must be a direct child of the authorized work directory.");
+        return path;
+    }
+
+    internal static (string Case, string Nonce) CheckAuthorizedCoreRun(string evidenceParent, string run)
+    {
+        evidenceParent = CheckGuidParent(evidenceParent);
+        CheckDirect(run, evidenceParent);
+        Require(Guid.TryParseExact(Path.GetFileName(run), "D", out _), "Core Host run must be a dedicated GUID directory.");
+        CheckPrivate(run);
+
+        // The PS launcher and the shallow Host run share the authorized GUID
+        // root; the private case marker must name this exact Host run.
+        var directory = Canonical(Environment.GetEnvironmentVariable(CoreCaseDirectory) ?? "");
+        var caseName = Path.GetFileName(directory);
+        var launcher = Path.GetDirectoryName(directory)!;
+        var nonce = Environment.GetEnvironmentVariable(CoreToken) ?? "";
+        Require(caseName is "History" or "Crash" && Guid.TryParseExact(nonce, "N", out _) && Path.GetFileName(launcher) == "qc-" + nonce,
+            "Missing authorized QuickCleanCore launcher identity.");
+        CheckDirect(launcher, evidenceParent);
+        CheckPrivate(launcher);
+        CheckPrivate(directory);
+        var marker = Path.Combine(directory, "owner.json");
+        CheckFileOwner(marker);
+        using var owner = JsonDocument.Parse(File.ReadAllText(marker));
+        var binding = owner.RootElement;
+        Require(binding.GetProperty("Nonce").GetString() == nonce && binding.GetProperty("Case").GetString() == caseName &&
+            SamePath(binding.GetProperty("HostRun").GetString() ?? "", run), "QuickCleanCore launcher marker does not bind this Host run.");
+        return (caseName, nonce);
+    }
+
+    internal static OwnedQuickCleanFixture Create(string run, string evidenceParent, string @case, string? nonce = null)
     {
         CheckDirect(run, evidenceParent);
         CheckPrivate(run);
         var root = CreatePrivate(run, Guid.NewGuid().ToString("D"));
-        var fixture = new OwnedQuickCleanFixture(root, @case, run, evidenceParent, Guid.NewGuid().ToString("N"));
+        var fixture = new OwnedQuickCleanFixture(root, @case, run, evidenceParent, nonce ?? Guid.NewGuid().ToString("N"), Core: nonce != null);
         WriteNew(Path.Combine(root, ".verification-owner"), Dpapi.Seal(JsonSerializer.Serialize(fixture)));
         CreatePrivate(root, "files");
         CreatePrivate(root, "state");
@@ -41,9 +76,10 @@ internal sealed record OwnedQuickCleanFixture(string Root, string Case, string R
         return fixture;
     }
 
-    internal static OwnedQuickCleanFixture OpenForChild(string evidenceParent, string run, string root)
+    internal static OwnedQuickCleanFixture OpenForChild(string evidenceParent, string run, string root, bool core)
     {
-        evidenceParent = CheckAuthorizedParent(evidenceParent);
+        var coreOwner = core ? CheckAuthorizedCoreRun(evidenceParent, run) : default;
+        if (!core) evidenceParent = CheckAuthorizedParent(evidenceParent);
         CheckDirect(run, evidenceParent);
         CheckDirect(root, run);
         Require(Guid.TryParseExact(Path.GetFileName(run), "D", out _) && Guid.TryParseExact(Path.GetFileName(root), "D", out _), "Child roots must be GUIDs.");
@@ -54,8 +90,10 @@ internal sealed record OwnedQuickCleanFixture(string Root, string Case, string R
         var owner = JsonSerializer.Deserialize<OwnedQuickCleanFixture>(Dpapi.Unseal(File.ReadAllText(ownerPath)))
             ?? throw new InvalidOperationException("Missing fixture descriptor.");
         var token = Environment.GetEnvironmentVariable(ChildToken);
-        Require(!string.IsNullOrEmpty(token) && Guid.TryParseExact(token, "N", out _) && owner.Nonce == token &&
+        Require(!string.IsNullOrEmpty(token) && Guid.TryParseExact(token, "N", out _) && owner.Nonce == token && owner.Core == core &&
             SamePath(owner.Root, root) && SamePath(owner.Run, run) && SamePath(owner.Parent, evidenceParent), "Child lacks a matching launcher/fixture owner.");
+        if (core) Require(owner.Nonce == coreOwner.Nonce && owner.Case == (coreOwner.Case == "Crash" ? "Interrupted" : coreOwner.Case),
+            "Child fixture type does not match the bound QuickCleanCore case.");
         CheckPrivate(owner.Files);
         CheckPrivate(owner.State);
         CheckPrivate(owner.Tasks);

@@ -61,7 +61,7 @@ try {
     $null=Invoke-LpGit $source @('config','core.autocrlf','false')
     $ids=@('R01-rule-inventory','R02-browser-discovery','R03-rule-approval-seal','P01-path-guards','P02-preference-guards','P03-preview-session','S01-scan-core','S02-same-root-dedupe','S03-scan-links','C01-clean-core','C02-clean-tamper','C03-clean-error-cap','C04-cancel','C05-pagination-export','L01-logging','W01-worker-boundary','V01-version-contract','G01-gui-selftest','G02-background-preview','W02-worker-selftest','X01-exe-selftest','Z98-added-case','Z99-added-case')
     foreach ($p in @('src/Main.ps1','src/Version.ps1','src/Rules.ps1','src/Core.ps1','src/Discovery.ps1','src/Maintenance.ps1','src/Worker.ps1','src/Gui.ps1','scripts/build.ps1','assets/app.ico','tests/cases/synthetic.ps1')) { Write-TestText (Join-Path $source $p) ('synthetic fixture '+$p) }
-    Write-TestText (Join-Path $source 'src/Version.ps1') "function Get-SjcVersion { '0.12.0' }"
+    Write-TestText (Join-Path $source 'src/Version.ps1') "function Get-SjcVersion { '0.12.0' }`nfunction Get-SjcPrereleaseChannel { return }"
     Write-TestText (Join-Path $source 'scripts/publish.ps1') ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'publish.ps1')))
     Write-TestJson (Join-Path $source 'version.json') @{version='0.12.0'}
     Write-TestText (Join-Path $source '.gitignore') "ignored/`nincoming-*`n"

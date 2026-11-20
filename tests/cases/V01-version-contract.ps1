@@ -10,6 +10,15 @@ try{
     Assert-Equal 'Windows file version derives from the public version' (([string]$version.version) + '.0') $version.fileVersion
     Assert-Equal 'result version equals the metadata version' ([string]$version.version) (Get-SjcVersion)
     Assert-Equal 'schema independent from display version' 1 (Get-SjcPlanSchemaVersion)
+    if($version.PSObject.Properties['channel'] -and $version.channel -cmatch '^(?:beta|rc)(?:\.[1-9][0-9]*)?$'){
+        Assert-Equal 'prerelease display version includes channel' "$($version.version)-$($version.channel)" (Get-SjcDisplayVersion)
+        $missing=Join-Path $EvidenceDirectory ([guid]::NewGuid().ToString('N'))
+        Assert-Throws 'prerelease is refused by stable publish before evidence is read' {
+            & (Join-Path $RepoRoot 'scripts\publish.ps1') -BuildDirectory $missing -VerificationDirectory $missing -GuiAcceptancePath $missing
+        } 'prerelease; use package-candidate\.ps1'
+    }else{
+        Assert-Equal 'stable display version equals numeric version' ([string]$version.version) (Get-SjcDisplayVersion)
+    }
     $sandbox=New-OwnedSandbox;$context=$sandbox.Context
     $target=Join-Path $sandbox.Root 'files\version.tmp';New-TestFile -Path $target -Bytes 8 -AgeHours 100|Out-Null
     $oldTask=New-SjcTaskDirectory $context
